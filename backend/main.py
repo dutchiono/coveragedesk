@@ -18,6 +18,12 @@ API_URL = "https://api.the-odds-api.com/v4/sports/{sport}/odds"
 SPORTS = {"NFL": "americanfootball_nfl", "NCAAF": "americanfootball_ncaaf"}
 KALSHI_API_URL = "https://external-api.kalshi.com/trade-api/v2"
 KALSHI_SPREAD_SERIES = {"NFL": "KXNFLSPREAD", "NCAAF": "KXNCAAFSPREAD"}
+KALSHI_MARKET_SERIES = {
+  ("NFL", "spread"): "KXNFLSPREAD",
+  ("NFL", "total"): "KXNFLTOTAL",
+  ("NCAAF", "spread"): "KXNCAAFSPREAD",
+  ("NCAAF", "total"): "KXNCAAFTOTAL",
+}
 BLUECHIP_WEEK_URL = os.getenv("BLUECHIP_WEEK_URL", "https://bluechipanalytics.com/college-football/games/2026/week3/")
 BLUECHIP_CACHE_SECONDS = int(os.getenv("BLUECHIP_CACHE_SECONDS", "1800"))
 ROOT = Path(__file__).resolve().parent
@@ -284,7 +290,7 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
   board: list[dict[str, Any]] = []
   bluechip_games = await fetch_bluechip_games()
   async with httpx.AsyncClient(timeout=25) as client:
-    for sport_name, series_ticker in KALSHI_SPREAD_SERIES.items():
+    for (sport_name, bet_type), series_ticker in KALSHI_MARKET_SERIES.items():
       markets: list[dict[str, Any]] = []
       cursor = ""
       for _ in range(max_pages):
@@ -311,12 +317,17 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
         price_move = None
         if last_price is not None and previous_price is not None and previous_price > 0:
           price_move = round((last_price - previous_price) * 100, 1)
+        cover_price = yes_bid if yes_bid is not None else last_price
+        model_gap = bluechip.get("gap") if bluechip and bet_type == "spread" else None
+        edge_score = round((model_gap or 0) * 10 + (cover_price or 0) * 100 + fp_to_float(market.get("volume_24h_fp")) / 1000, 2)
 
         board.append(
           {
             "game_id": market["ticker"],
             "data_source": "kalshi",
             "sport": sport_name,
+            "bet_type": bet_type,
+            "edge_score": edge_score,
             "commence_time": market.get("occurrence_datetime") or market.get("expected_expiration_time"),
             "away_team": away_team,
             "home_team": home_team,
@@ -352,7 +363,7 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
             },
             "bluechip": bluechip,
             "metrics": {
-              "model_market_gap": bluechip.get("gap") if bluechip else None,
+              "model_market_gap": model_gap,
               "line_move": price_move,
               "confidence_score": min(96, 56 + int(fp_to_float(market.get("volume_24h_fp")) > 0) * 12 + int(fp_to_float(market.get("open_interest_fp")) > 0) * 12),
             },
@@ -363,13 +374,14 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
   return sorted(
     board,
     key=lambda row: (
+      row["edge_score"],
       row["metrics"]["model_market_gap"] or 0,
       row["contract"]["volume_24h"],
       row["contract"]["open_interest"],
       abs(row["contract"]["price_move"] or 0),
     ),
     reverse=True,
-  ), f"Fetched {len(board)} Kalshi football spread contracts"
+  ), f"Fetched {len(board)} Kalshi football spread/total contracts"
 
 
 def store_snapshots(rows: list[dict[str, Any]]) -> None:

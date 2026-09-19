@@ -148,7 +148,7 @@ button {
 
 .nav-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 6px;
 }
 
@@ -365,6 +365,59 @@ th {
 .weather-cell {
   max-width: 220px;
   color: #555b58;
+}
+
+.breakdown-list {
+  display: grid;
+}
+
+.breakdown-row {
+  display: grid;
+  grid-template-columns: 48px minmax(180px, 0.9fr) minmax(280px, 1.6fr) minmax(220px, 1fr);
+  gap: 14px;
+  align-items: center;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #efede7;
+  background: #fff;
+  color: inherit;
+  padding: 14px 16px;
+  text-align: left;
+}
+
+.breakdown-row:hover {
+  background: #fbfaf6;
+}
+
+.breakdown-row strong,
+.breakdown-row small,
+.line-copy {
+  display: block;
+}
+
+.breakdown-row small,
+.line-copy {
+  overflow: hidden;
+  color: #656b68;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rank {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 999px;
+  background: #18201d;
+  color: #fff;
+  font-weight: 900;
+}
+
+.team-breakdown {
+  margin: 14px 0 0;
+  color: #4f5652;
+  line-height: 1.55;
 }
 
 .probability {
@@ -606,6 +659,14 @@ pre {
   .detail-grid,
   .performance-grid {
     grid-template-columns: 1fr;
+  }
+
+  .breakdown-row {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+  .breakdown-row .line-copy {
+    grid-column: 2;
   }
 
   .line-chart {

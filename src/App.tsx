@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 
 type SportLabel = 'ALL' | 'NFL' | 'NCAAF'
-type Page = 'board' | 'detail' | 'status'
+type Page = 'board' | 'detail'
 
 type BoardRow = {
   game_id: string
   data_source?: 'sportsbook' | 'kalshi'
   sport: 'NFL' | 'NCAAF'
+  bet_type?: 'spread' | 'total'
+  edge_score?: number
   commence_time: string
   away_team: string
   home_team: string
@@ -115,6 +117,16 @@ function formatWeather(row: BoardRow) {
   return `${weather.condition}${temp}${wind}`
 }
 
+function marketTypeLabel(row: BoardRow) {
+  return row.bet_type === 'total' ? 'Over/under' : 'Spread'
+}
+
+function breakdownLine(row: BoardRow) {
+  const price = `${formatCents(row.contract?.yes_bid ?? null)} / ${formatCents(row.contract?.yes_ask ?? null)}`
+  const model = row.bluechip?.model_line ? `BC ${row.bluechip.model_line}, gap ${formatNumber(row.bluechip.gap)}` : 'No BC model'
+  return `${marketTypeLabel(row)}: ${consensusLabel(row)} | ${price} | ${model}`
+}
+
 function confidenceLabel(score: number) {
   if (score >= 84) return 'Strong'
   if (score >= 72) return 'Good'
@@ -151,8 +163,9 @@ function App() {
   const [board, setBoard] = useState<BoardResponse>(emptyBoard)
   const [activePage, setActivePage] = useState<Page>('board')
   const [selectedSport, setSelectedSport] = useState<SportLabel>('ALL')
-  const [sortMode, setSortMode] = useState('volume')
+  const [sortMode, setSortMode] = useState('cover')
   const [selectedGameId, setSelectedGameId] = useState('')
+  const [teamSearch, setTeamSearch] = useState('')
   const [loading, setLoading] = useState(false)
 
   async function refreshBoard() {
@@ -168,7 +181,14 @@ function App() {
   const rows = useMemo(() => {
     const sportRows =
       selectedSport === 'ALL' ? board.rows : board.rows.filter((row) => row.sport === selectedSport)
-    return [...sportRows].sort((a, b) => {
+    const query = teamSearch.trim().toLowerCase()
+    const searchedRows = query
+      ? sportRows.filter((row) =>
+          `${row.away_team} ${row.home_team} ${row.contract?.title ?? ''}`.toLowerCase().includes(query),
+        )
+      : sportRows
+    return [...searchedRows].sort((a, b) => {
+      if (sortMode === 'cover') return (b.edge_score ?? 0) - (a.edge_score ?? 0)
       if (sortMode === 'move') {
         return Math.abs(b.metrics.line_move ?? 0) - Math.abs(a.metrics.line_move ?? 0)
       }
@@ -177,7 +197,7 @@ function App() {
       if (sortMode === 'books') return b.market.book_count - a.market.book_count
       return Math.abs(b.metrics.model_market_gap ?? 0) - Math.abs(a.metrics.model_market_gap ?? 0)
     })
-  }, [board.rows, selectedSport, sortMode])
+  }, [board.rows, selectedSport, sortMode, teamSearch])
 
   const selectedRow = rows.find((row) => row.game_id === selectedGameId) ?? rows[0] ?? null
   const topGap =
@@ -201,7 +221,7 @@ function App() {
         </div>
 
         <div className="nav-tabs" role="tablist">
-          {(['board', 'detail', 'status'] as Page[]).map((page) => (
+          {(['board', 'detail'] as Page[]).map((page) => (
             <button
               className={activePage === page ? 'selected' : ''}
               key={page}
@@ -212,6 +232,16 @@ function App() {
             </button>
           ))}
         </div>
+
+        <label className="field">
+          <span>Team search</span>
+          <input
+            onChange={(event) => setTeamSearch(event.target.value)}
+            placeholder="BYU, Texas, Notre Dame"
+            type="search"
+            value={teamSearch}
+          />
+        </label>
 
         <div className="field">
           <span>Sport</span>
@@ -232,6 +262,7 @@ function App() {
         <label className="field">
           <span>Rank by</span>
           <select value={sortMode} onChange={(event) => setSortMode(event.target.value)}>
+            <option value="cover">Best cover odds</option>
             <option value="gap">Model gap</option>
             <option value="move">Price move</option>
             <option value="volume">24h volume</option>
@@ -256,7 +287,7 @@ function App() {
         <div className="topbar">
           <div>
             <p className="eyebrow">Backend-ranked live markets</p>
-            <h2>Football lines, contract prices, and market movement</h2>
+            <h2>Best lines to cover, spread and total</h2>
           </div>
           <div className="status">{board.source === 'preview' ? 'Preview mode' : 'API connected'}</div>
         </div>
@@ -284,70 +315,39 @@ function App() {
           <section className="board-panel">
             <div className="panel-heading">
               <div>
-                <h3>Odds board</h3>
-                <p>The backend pulls live markets and sends this precomputed board.</p>
+                <h3>Ranked line breakdown</h3>
+                <p>Each card stays under three lines and ranks spread or over/under markets top to bottom.</p>
               </div>
             </div>
 
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Kickoff</th>
-                    <th>Market</th>
-                    <th>Contract</th>
-                    <th>Yes bid</th>
-                    <th>Yes ask</th>
-                    <th>BC model</th>
-                    <th>Gap</th>
-                    <th>Weather</th>
-                    <th>24h vol.</th>
-                    <th>Timestamp</th>
-                    <th>Conf.</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.length ? (
-                    rows.slice(0, 200).map((row) => (
-                      <tr
-                        className="selectable"
-                        key={row.game_id}
-                        onClick={() => {
-                          setSelectedGameId(row.game_id)
-                          setActivePage('detail')
-                        }}
-                      >
-                        <td>{formatDate(row.commence_time)}</td>
-                        <td>
-                          <span className="game">
-                            {row.away_team} vs {row.home_team}
-                          </span>
-                          <span className="muted">{row.sport}</span>
-                        </td>
-                        <td>{consensusLabel(row)}</td>
-                        <td>{formatCents(row.contract?.yes_bid ?? null)}</td>
-                        <td>{formatCents(row.contract?.yes_ask ?? null)}</td>
-                        <td>{row.bluechip?.model_line ?? '-'}</td>
-                        <td>{formatNumber(row.bluechip?.gap ?? row.metrics.model_market_gap)}</td>
-                        <td className="weather-cell">{formatWeather(row)}</td>
-                        <td>{formatVolume(row.contract?.volume_24h)}</td>
-                        <td>{formatDate(row.market.latest_timestamp)}</td>
-                        <td>
-                          <span className={`badge ${confidenceLabel(row.metrics.confidence_score).toLowerCase()}`}>
-                            {row.metrics.confidence_score}
-                          </span>
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td className="empty" colSpan={11}>
-                        No live markets are available yet. Refresh in a minute.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+            <div className="breakdown-list">
+              {rows.length ? (
+                rows.slice(0, 200).map((row, index) => (
+                  <button
+                    className="breakdown-row"
+                    key={row.game_id}
+                    onClick={() => {
+                      setSelectedGameId(row.game_id)
+                      setActivePage('detail')
+                    }}
+                    type="button"
+                  >
+                    <span className="rank">{index + 1}</span>
+                    <span>
+                      <strong>
+                        {row.away_team} vs {row.home_team}
+                      </strong>
+                      <small>
+                        {row.sport} / {marketTypeLabel(row)} / {formatDate(row.commence_time)}
+                      </small>
+                    </span>
+                    <span className="line-copy">{breakdownLine(row)}</span>
+                    <span className="line-copy muted">{formatWeather(row)} / vol {formatVolume(row.contract?.volume_24h)}</span>
+                  </button>
+                ))
+              ) : (
+                <div className="empty">No live markets match that search.</div>
+              )}
             </div>
           </section>
         ) : null}
@@ -359,6 +359,13 @@ function App() {
                 <div className="detail-main">
                   <p className="eyebrow">{selectedRow.sport}</p>
                   <h3>{selectedRow.contract?.title ?? `${selectedRow.away_team} at ${selectedRow.home_team}`}</h3>
+                  <p className="team-breakdown">
+                    {selectedRow.away_team} vs {selectedRow.home_team}
+                    <br />
+                    {breakdownLine(selectedRow)}
+                    <br />
+                    {formatWeather(selectedRow)}
+                  </p>
                   <div className="line-chart" aria-label="Opening to current line">
                     <span>Prev {formatCents(selectedRow.contract?.previous_price ?? selectedRow.market.opening_spread)}</span>
                     <strong>Last {formatCents(selectedRow.contract?.last_price ?? selectedRow.market.consensus_spread)}</strong>
@@ -397,6 +404,11 @@ function App() {
                     <small>{formatWeather(selectedRow)}</small>
                   </div>
                   <div>
+                    <span>Backend status</span>
+                    <strong>{board.source}</strong>
+                    <small>{board.status}</small>
+                  </div>
+                  <div>
                     <span>Reliability</span>
                     <strong>{selectedRow.metrics.confidence_score}</strong>
                     <small>{confidenceLabel(selectedRow.metrics.confidence_score)}</small>
@@ -409,21 +421,6 @@ function App() {
           </section>
         ) : null}
 
-        {activePage === 'status' ? (
-          <section className="performance-grid">
-            <div className="performance-card">
-              <h3>Backend status</h3>
-              <p>{board.status}</p>
-            </div>
-            <div className="performance-card">
-              <h3>Data contract</h3>
-              <p>
-                `/api/board` returns backend-ranked rows from sportsbook snapshots when configured,
-                otherwise live read-only Kalshi football spread markets. The browser does not calculate odds.
-              </p>
-            </div>
-          </section>
-        ) : null}
       </section>
     </main>
   )
