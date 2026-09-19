@@ -363,9 +363,22 @@ th {
   display: grid;
 }
 
+.breakdown-header {
+  display: grid;
+  grid-template-columns: 48px minmax(180px, 1.1fr) minmax(220px, 1.25fr) minmax(160px, 0.8fr) minmax(220px, 1.15fr);
+  gap: 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e8e4da;
+  background: #faf9f5;
+  color: #656b68;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
 .breakdown-row {
   display: grid;
-  grid-template-columns: 48px minmax(180px, 0.9fr) minmax(280px, 1.6fr) minmax(220px, 1fr);
+  grid-template-columns: 48px minmax(180px, 1.1fr) minmax(220px, 1.25fr) minmax(160px, 0.8fr) minmax(220px, 1.15fr);
   gap: 14px;
   align-items: center;
   width: 100%;
@@ -388,16 +401,95 @@ th {
 
 .breakdown-row strong,
 .breakdown-row small,
-.line-copy {
+.line-copy,
+.row-game,
+.row-market,
+.row-weather {
   display: block;
+  min-width: 0;
 }
 
 .breakdown-row small,
-.line-copy {
+.line-copy,
+.row-market strong,
+.row-weather strong,
+.row-weather small {
   overflow: hidden;
   color: #656b68;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.row-market strong,
+.row-weather strong {
+  color: #1b1e23;
+}
+
+.row-market small,
+.row-weather small {
+  display: block;
+  margin-top: 4px;
+}
+
+.mobile-label {
+  display: none;
+  color: #656b68;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.row-signals {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.row-signals span:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.row-signals b {
+  color: #656b68;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.row-signals strong {
+  font-size: 1.05rem;
+}
+
+.confidence {
+  display: inline-grid;
+  min-width: 74px;
+  min-height: 28px;
+  place-items: center;
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.confidence.strong {
+  background: #d4f07d;
+  color: #18201d;
+}
+
+.confidence.good {
+  background: #cfe4ff;
+  color: #123861;
+}
+
+.confidence.moderate {
+  background: #f1e4c8;
+  color: #5d4218;
+}
+
+.confidence.thin {
+  background: #ebe7df;
+  color: #535a56;
 }
 
 .rank {
@@ -644,6 +736,7 @@ pre {
 
   .sidebar {
     position: static;
+    padding: 18px;
   }
 
   .topbar {
@@ -658,12 +751,59 @@ pre {
     grid-template-columns: 1fr;
   }
 
-  .breakdown-row {
-    grid-template-columns: 36px minmax(0, 1fr);
+  .content {
+    padding: 18px;
   }
 
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .panel-heading {
+    padding: 14px;
+  }
+
+  .breakdown-header {
+    display: none;
+  }
+
+  .breakdown-row {
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 10px 12px;
+    padding: 14px;
+  }
+
+  .row-game,
+  .row-market,
+  .row-signals,
+  .row-weather,
   .breakdown-row .line-copy {
     grid-column: 2;
+  }
+
+  .row-market,
+  .row-weather {
+    display: grid;
+    gap: 3px;
+    padding-top: 2px;
+  }
+
+  .mobile-label {
+    display: block;
+  }
+
+  .row-market strong,
+  .row-weather strong,
+  .row-weather small,
+  .breakdown-row small,
+  .line-copy {
+    white-space: normal;
+  }
+
+  .row-signals {
+    justify-content: space-between;
+    border-top: 1px solid #efede7;
+    padding-top: 10px;
   }
 
   .line-chart {

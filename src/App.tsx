@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
 type SportLabel = 'ALL' | 'NFL' | 'NCAAF'
+const REFRESH_MS = 5 * 60 * 1000
 
 type BoardRow = {
   game_id: string
@@ -124,6 +125,11 @@ function formatCents(value: number | null) {
   return value === null || !Number.isFinite(value) ? '-' : `${Math.round(value * 100)}c`
 }
 
+function formatSigned(value: number | null, digits = 1) {
+  if (value === null || !Number.isFinite(value)) return '-'
+  return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`
+}
+
 function formatVolume(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-'
   return value >= 1000 ? value.toLocaleString(undefined, { maximumFractionDigits: 0 }) : value.toFixed(0)
@@ -152,6 +158,17 @@ function breakdownLine(row: BoardRow) {
   const price = `${formatCents(row.contract?.yes_bid ?? null)} / ${formatCents(row.contract?.yes_ask ?? null)}`
   const model = row.bluechip?.model_line ? `BC ${row.bluechip.model_line}, gap ${formatNumber(row.bluechip.gap)}` : 'No BC model'
   return `${marketTypeLabel(row)}: ${consensusLabel(row)} | ${price} | ${model}`
+}
+
+function confidenceLabel(score: number) {
+  if (score >= 84) return 'Strong'
+  if (score >= 72) return 'Good'
+  if (score >= 62) return 'Moderate'
+  return 'Thin'
+}
+
+function confidenceClass(score: number) {
+  return confidenceLabel(score).toLowerCase()
 }
 
 function consensusLabel(row: BoardRow) {
@@ -201,7 +218,7 @@ function App() {
     void refresh(true)
     const timer = window.setInterval(() => {
       void refresh()
-    }, 60000)
+    }, REFRESH_MS)
 
     return () => {
       active = false
@@ -290,7 +307,7 @@ function App() {
         <div className="data-source">
           <span>Live feed</span>
           <strong>{liveLabel}</strong>
-          <small>{refreshing ? 'Updating now' : `Auto-refreshes every minute`}</small>
+          <small>{refreshing ? 'Updating now' : `Auto-refreshes every 5 minutes`}</small>
           <small>{rows.length.toLocaleString()} markets</small>
         </div>
       </aside>
@@ -389,6 +406,14 @@ function App() {
             </div>
           </div>
 
+          <div className="breakdown-header" aria-hidden="true">
+            <span>#</span>
+            <span>Game</span>
+            <span>Market</span>
+            <span>Gap / confidence</span>
+            <span>Weather</span>
+          </div>
+
           <div className="breakdown-list">
             {rows.length ? (
               rows.slice(0, 200).map((row, index) => (
@@ -399,7 +424,7 @@ function App() {
                   type="button"
                 >
                   <span className="rank">{index + 1}</span>
-                  <span>
+                  <span className="row-game">
                     <strong>
                       {row.away_team} vs {row.home_team}
                     </strong>
@@ -407,8 +432,27 @@ function App() {
                       {row.sport} / {marketTypeLabel(row)} / {formatDate(row.commence_time)}
                     </small>
                   </span>
-                  <span className="line-copy">{breakdownLine(row)}</span>
-                  <span className="line-copy muted">{formatWeather(row)} / {formatWeatherImpact(row)} / vol {formatVolume(row.contract?.volume_24h)}</span>
+                  <span className="row-market">
+                    <span className="mobile-label">Market</span>
+                    <strong>{consensusLabel(row)}</strong>
+                    <small>
+                      Bid/ask {formatCents(row.contract?.yes_bid ?? null)} / {formatCents(row.contract?.yes_ask ?? null)}
+                    </small>
+                  </span>
+                  <span className="row-signals">
+                    <span>
+                      <b>Gap</b>
+                      <strong>{formatSigned(row.bluechip?.gap ?? row.metrics.model_market_gap)}</strong>
+                    </span>
+                    <span className={`confidence ${confidenceClass(row.metrics.confidence_score)}`}>
+                      {confidenceLabel(row.metrics.confidence_score)}
+                    </span>
+                  </span>
+                  <span className="row-weather">
+                    <span className="mobile-label">Weather</span>
+                    <strong>{formatWeatherImpact(row)}</strong>
+                    <small>{formatWeather(row)} / vol {formatVolume(row.contract?.volume_24h)}</small>
+                  </span>
                 </button>
               ))
             ) : (
