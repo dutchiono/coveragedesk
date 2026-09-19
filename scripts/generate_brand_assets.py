@@ -73,7 +73,7 @@ def create_banner():
     title_x = box_x + box_size + 50
     title_y = box_y + 35
     title_font = get_font(78, bold=True)
-    draw.text((title_x, title_y), "COVERAGEDESK", fill=COLOR_WHITE, font=title_font)
+    draw.text((title_x, title_y), "COVERAGE DESK", fill=COLOR_WHITE, font=title_font)
     
     # Subtitle
     sub_y = title_y + 85
