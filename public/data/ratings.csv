@@ -1,0 +1,9 @@
+sport,team,power_rating,injury_adj,form_adj
+NFL,Demo Team A,88,0,0
+NFL,Demo Team B,82,0,0
+NFL,Demo Team C,84,0,0.5
+NFL,Demo Team D,79,-0.5,0
+NCAAF,Demo State,91,0,0.5
+NCAAF,Demo University,78,0,0
+NCAAF,Demo Tech,85,0.5,0
+NCAAF,Demo College,81,0,-0.5

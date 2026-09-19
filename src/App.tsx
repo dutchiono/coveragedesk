@@ -1,5 +1,4 @@
-import { useMemo, useState } from 'react'
-import type { ChangeEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 type SportLabel = 'NFL' | 'NCAAF'
 type Page = 'board' | 'detail' | 'performance'
@@ -211,15 +210,6 @@ function parseCsv(text: string) {
 function toNumber(value: string, fallback = 0) {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
-}
-
-function readFileText(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result ?? ''))
-    reader.onerror = () => reject(reader.error)
-    reader.readAsText(file)
-  })
 }
 
 function buildRatingRows(text: string) {
@@ -523,6 +513,7 @@ function App() {
   const [lines, setLines] = useState<FlatLine[]>([])
   const [status, setStatus] = useState('Ready')
   const [error, setError] = useState('')
+  const [dataStatus, setDataStatus] = useState('Loading managed CSV data...')
   const [loading, setLoading] = useState(false)
   const [activePage, setActivePage] = useState<Page>('board')
   const [selectedEventId, setSelectedEventId] = useState('')
@@ -543,22 +534,32 @@ function App() {
   const strongest = filteredBoard[0] ?? board[0]
   const modelLines = board.filter((row) => row.model_margin_home !== null).length
 
+  useEffect(() => {
+    async function loadManagedData() {
+      try {
+        const [ratingsResponse, historyResponse] = await Promise.all([
+          fetch('/data/ratings.csv'),
+          fetch('/data/historical_training.csv'),
+        ])
+        if (!ratingsResponse.ok) throw new Error('ratings.csv could not be loaded')
+        if (!historyResponse.ok) throw new Error('historical_training.csv could not be loaded')
+        setRatings(buildRatingRows(await ratingsResponse.text()))
+        setHistory(buildHistoryRows(await historyResponse.text()))
+        setDataStatus('Managed ratings and history loaded')
+      } catch (managedDataError) {
+        setDataStatus(
+          managedDataError instanceof Error ? managedDataError.message : 'Managed CSV data failed to load',
+        )
+      }
+    }
+
+    void loadManagedData()
+  }, [])
+
   function toggleSport(sport: SportLabel) {
     setSelectedSports((current) =>
       current.includes(sport) ? current.filter((item) => item !== sport) : [...current, sport],
     )
-  }
-
-  async function uploadRatings(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    if (!file) return
-    setRatings(buildRatingRows(await readFileText(file)))
-  }
-
-  async function uploadHistory(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    if (!file) return
-    setHistory(buildHistoryRows(await readFileText(file)))
   }
 
   function loadDemo() {
@@ -621,7 +622,7 @@ function App() {
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = 'marcbets-coverage-board.csv'
+    anchor.download = 'markbets-coverage-board.csv'
     anchor.click()
     URL.revokeObjectURL(url)
   }
@@ -632,7 +633,7 @@ function App() {
         <div className="brand">
           <span className="brand-mark">MB</span>
           <div>
-            <p>MarcBets</p>
+            <p>MarkBets</p>
             <h1>Coverage Desk</h1>
           </div>
         </div>
@@ -724,17 +725,12 @@ function App() {
           ))}
         </div>
 
-        <label className="file-field">
-          <span>Ratings CSV</span>
-          <input accept=".csv" onChange={uploadRatings} type="file" />
-          <small>{ratings.length ? `${ratings.length} teams loaded` : 'Optional power ratings'}</small>
-        </label>
-
-        <label className="file-field">
-          <span>Historical CSV</span>
-          <input accept=".csv" onChange={uploadHistory} type="file" />
-          <small>{history.length ? `${history.length} rows loaded` : 'Optional calibration'}</small>
-        </label>
+        <div className="data-source">
+          <span>Managed model data</span>
+          <strong>{ratings.length} teams</strong>
+          <small>{history.length} history rows</small>
+          <em>{dataStatus}</em>
+        </div>
 
         <button className="primary" disabled={loading} onClick={fetchOdds} type="button">
           {loading ? 'Loading...' : 'Refresh odds'}
@@ -943,11 +939,11 @@ function App() {
 
         <section className="templates" aria-label="CSV templates">
           <details>
-            <summary>Ratings CSV template</summary>
+            <summary>Managed ratings CSV format</summary>
             <pre>{ratingTemplate}</pre>
           </details>
           <details>
-            <summary>Historical CSV template</summary>
+            <summary>Managed historical CSV format</summary>
             <pre>{historyTemplate}</pre>
           </details>
         </section>

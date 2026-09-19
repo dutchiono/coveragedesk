@@ -1,4 +1,4 @@
-# MarcBets Coverage Desk
+# MarkBets Coverage Desk
 
 Static React/Vite dashboard for NFL and NCAA spread coverage analysis.
 
@@ -8,13 +8,26 @@ Static React/Vite dashboard for NFL and NCAA spread coverage analysis.
 - NFL and NCAA FBS sport keys
 - Multi-book consensus spread by game
 - No-vig market probability
-- Uploaded team power ratings with injury/form adjustments
+- Managed team power ratings with injury/form adjustments
 - Separate NFL/NCAAF home-field controls
 - Model fair spread, model edge, coverage probability, and reliability score
 - Game-detail view
 - Historical model-performance and probability-band view
 - Demo mode without an API key
 - CSV export
+
+## Data updates
+
+Ratings and historical calibration data are managed in GitHub, not uploaded through the browser.
+
+Agents should update these files in the repo and push to `main`:
+
+```text
+public/data/ratings.csv
+public/data/historical_training.csv
+```
+
+The app fetches those CSV files when it loads. The box deploy cron should then pull, rebuild, and publish the latest data.
 
 ## Local development
 
@@ -40,21 +53,21 @@ dist
 The app is static, so it fits the existing deploy helper:
 
 ```bash
-/srv/drink/bin/add-site.sh marcbets marcbets.miono.live https://github.com/dutchiono/marcbets.git main "npm run build" dist
+/srv/drink/bin/add-site.sh markbets markbets.miono.live https://github.com/dutchiono/markbets.git main "npm run build" dist
 ```
 
 For wildcard hosting, nginx and DNS still need root/admin setup:
 
 ```dns
-A  marcbets.miono.live    198.71.54.203
-A  *.marcbets.miono.live  198.71.54.203
+A  markbets.miono.live    198.71.54.203
+A  *.markbets.miono.live  198.71.54.203
 ```
 
 Nginx should use:
 
 ```nginx
-server_name marcbets.miono.live *.marcbets.miono.live;
-root /srv/drink/www/marcbets.miono.live/current;
+server_name markbets.miono.live *.markbets.miono.live;
+root /srv/drink/www/markbets.miono.live/current;
 ```
 
 Wildcard HTTPS requires DNS-01 validation, not the normal HTTP certbot flow.

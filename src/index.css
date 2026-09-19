@@ -106,6 +106,32 @@ button {
   color: #a8b2a6;
 }
 
+.data-source {
+  display: grid;
+  gap: 5px;
+  border: 1px solid #3c4a43;
+  border-radius: 6px;
+  background: #0f1513;
+  padding: 12px;
+}
+
+.data-source span {
+  color: #d9dfd6;
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.data-source strong {
+  color: #fff;
+  font-size: 1.25rem;
+}
+
+.data-source small,
+.data-source em {
+  color: #a8b2a6;
+  font-style: normal;
+}
+
 .range-field input {
   accent-color: #d4f07d;
 }
