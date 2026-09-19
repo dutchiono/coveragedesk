@@ -485,6 +485,10 @@ def contract_model_gap(
   return None
 
 
+def normal_cdf_prob(gap: float, std_dev: float = 13.5) -> float:
+  return clamp(0.5 * (1.0 + math.erf(gap / (std_dev * math.sqrt(2)))), 0.05, 0.95)
+
+
 def rating_for_market(
   bet_type: str,
   market: dict[str, Any],
@@ -516,7 +520,7 @@ def rating_for_market(
 
   # Ensure price_cents is strictly in cents scale (0.0 to 100.0)
   price_cents = cover_price * 100.0 if cover_price <= 1.0 else cover_price
-  fair_prob = clamp(0.5 + model_gap * 0.035, 0.05, 0.95)
+  fair_prob = normal_cdf_prob(model_gap)
   market_prob = price_cents / 100.0
   prob_edge = fair_prob - market_prob
   price_edge_cents = round(prob_edge * 100, 1)
