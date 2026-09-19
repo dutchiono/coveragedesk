@@ -32,6 +32,19 @@ KALSHI_MARKET_SERIES = {
 BLUECHIP_WEEK_URL = os.getenv("BLUECHIP_WEEK_URL", "https://bluechipanalytics.com/college-football/games/2026/week3/")
 BLUECHIP_CACHE_SECONDS = int(os.getenv("BLUECHIP_CACHE_SECONDS", "1800"))
 KALSHI_INCLUDE_UNMODELED = os.getenv("KALSHI_INCLUDE_UNMODELED", "true").lower() in {"1", "true", "yes"}
+AGENT_AUTORUN_ENABLED = os.getenv("COVERAGEDESK_AGENT_AUTORUN", "true").lower() in {"1", "true", "yes"}
+AGENT_INTERVAL_SECONDS = max(60, int(os.getenv("COVERAGEDESK_AGENT_INTERVAL_SECONDS", "3600")))
+COVERAGEDESK_TOKEN_CA = (
+  os.getenv("COVERAGEDESK_TOKEN_CA")
+  or os.getenv("COVERAGE_TOKEN_CA")
+  or os.getenv("CVR_TOKEN_CA")
+  or ""
+).strip()
+COVERAGEDESK_TOKEN_SYMBOL = os.getenv("COVERAGEDESK_TOKEN_SYMBOL", "$CVR").strip() or "$CVR"
+OPENCODE_API_KEY = os.getenv("OPENCODE_API_KEY", "").strip()
+OPENCODE_API_BASE_URL = os.getenv("OPENCODE_API_BASE_URL", "https://api.opencode.ai/v1").rstrip("/")
+OPENCODE_CHAT_MODEL = os.getenv("OPENCODE_CHAT_MODEL") or os.getenv("OPENCODE_MODEL") or "opencode/gpt-5.1-codex"
+OPENCODE_CHAT_TEMPERATURE = float(os.getenv("OPENCODE_CHAT_TEMPERATURE", "0.2"))
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("COVERAGEDESK_DB", ROOT / "data" / "coveragedesk.sqlite3"))
@@ -39,10 +52,44 @@ PROJECTIONS_PATH = Path(os.getenv("COVERAGEDESK_PROJECTIONS", ROOT / "data" / "p
 
 app = FastAPI(title="CoverageDesk API")
 BLUECHIP_CACHE: dict[str, Any] = {"expires_at": 0.0, "games": {}}
+AGENT_TASK: asyncio.Task[None] | None = None
 
 
 def now_iso() -> str:
   return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+async def agent_autorun_loop() -> None:
+  while True:
+    try:
+      await agent_tick()
+    except asyncio.CancelledError:
+      raise
+    except Exception as exc:
+      print(f"[CoverageDesk] agent loop failed: {exc}")
+    await asyncio.sleep(AGENT_INTERVAL_SECONDS)
+
+
+@app.on_event("startup")
+async def start_agent_autorun() -> None:
+  global AGENT_TASK
+  if not AGENT_AUTORUN_ENABLED:
+    return
+  if AGENT_TASK is None or AGENT_TASK.done():
+    AGENT_TASK = asyncio.create_task(agent_autorun_loop())
+
+
+@app.on_event("shutdown")
+async def stop_agent_autorun() -> None:
+  global AGENT_TASK
+  if AGENT_TASK is None:
+    return
+  AGENT_TASK.cancel()
+  try:
+    await AGENT_TASK
+  except asyncio.CancelledError:
+    pass
+  AGENT_TASK = None
 
 
 def canonical_id(sport: str, commence_time: str, away_team: str, home_team: str) -> str:
@@ -130,6 +177,22 @@ def connect() -> sqlite3.Connection:
 
   conn.execute(
     """
+    CREATE TABLE IF NOT EXISTS agent_chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      user_name TEXT NOT NULL,
+      user_message TEXT NOT NULL,
+      assistant_message TEXT NOT NULL,
+      model TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+    """
+  )
+  conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_chat_channel ON agent_chat_messages(channel, chat_id, created_at)")
+
+  conn.execute(
+    """
     CREATE TABLE IF NOT EXISTS token_stats (
       id INTEGER PRIMARY KEY,
       total_supply REAL NOT NULL,
@@ -193,7 +256,11 @@ def connect() -> sqlite3.Connection:
     """
   )
 
-  # Seed token stats if empty ($CVR ticker)
+  if not COVERAGEDESK_TOKEN_CA:
+    conn.commit()
+    return conn
+
+  # Seed token stats only after the real token contract address is configured.
   cursor = conn.cursor()
   cursor.execute("SELECT COUNT(*) FROM token_stats")
   if cursor.fetchone()[0] == 0:
@@ -636,6 +703,175 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
   return ranked_rows, f"Fetched {raw_count} Kalshi contracts; using {len(bluechip_games)} Blue Chip NCAAF games and showing {len(ranked_rows)} ranked lines"
 
 
+def market_prompt_line(row: dict[str, Any], rank: int) -> str:
+  rating = row.get("rating") or {}
+  metrics = row.get("metrics") or {}
+  market = row.get("market") or {}
+  contract = row.get("contract") or {}
+  gap = metrics.get("model_market_gap")
+  model = row.get("bluechip", {}).get("model_line") if row.get("bluechip") else row.get("model", {}).get("fair_spread")
+  price = contract.get("last_price") or contract.get("yes_bid") or contract.get("yes_ask")
+  rating_label = "unrated" if rating.get("summary") == "Unmodeled market" or gap is None else rating.get("grade", "modeled")
+  return (
+    f"{rank}. {row.get('away_team')} at {row.get('home_team')} "
+    f"({row.get('sport')}/{row.get('bet_type', 'spread')}) | "
+    f"line={contract.get('side_label') or market.get('consensus_spread')} | "
+    f"model={model} | gap={gap} | price={price} | read={rating_label}"
+  )
+
+
+def recent_thought_prompt_lines(limit: int = 8) -> list[str]:
+  with connect() as conn:
+    rows = conn.execute(
+      """
+      SELECT matchup, thought, confidence, edge, bet_placed, created_at
+      FROM agent_thoughts
+      ORDER BY id DESC
+      LIMIT ?
+      """,
+      (limit,),
+    ).fetchall()
+  lines = []
+  for row in rows:
+    lines.append(
+      f"{row['created_at']} | {row['matchup']} | edge={row['edge']} | confidence={row['confidence']} | bet_placed={row['bet_placed']} | {row['thought']}"
+    )
+  return lines
+
+
+def recent_chat_prompt_lines(channel: str, chat_id: str, limit: int = 6) -> list[str]:
+  with connect() as conn:
+    rows = conn.execute(
+      """
+      SELECT user_name, user_message, assistant_message, created_at
+      FROM agent_chat_messages
+      WHERE channel = ? AND chat_id = ?
+      ORDER BY id DESC
+      LIMIT ?
+      """,
+      (channel, chat_id, limit),
+    ).fetchall()
+  return [
+    f"{row['created_at']} | {row['user_name']}: {row['user_message']} | CoverageDesk: {row['assistant_message']}"
+    for row in reversed(rows)
+  ]
+
+
+async def build_agent_chat_context(channel: str, chat_id: str) -> dict[str, Any]:
+  board_data = await board()
+  rows = board_data.get("rows", [])
+  modeled_rows = [
+    row for row in rows
+    if row.get("metrics", {}).get("model_market_gap") is not None
+      and (row.get("rating") or {}).get("summary") != "Unmodeled market"
+  ]
+  top_rows = modeled_rows[:8] or rows[:8]
+  token_stats = get_token_stats()
+  bets = get_agent_bets(limit=8).get("bets", [])
+
+  token_status = (
+    f"Token enabled: {token_stats.get('token_symbol')} CA {token_stats.get('contract_address')}"
+    if token_stats.get("enabled")
+    else "Token contract is not configured. Bankroll, burns, payouts, and steering are disabled/read-only."
+  )
+
+  return {
+    "board_status": board_data.get("status"),
+    "generated_at": board_data.get("generated_at"),
+    "market_lines": [market_prompt_line(row, index + 1) for index, row in enumerate(top_rows)],
+    "recent_thoughts": recent_thought_prompt_lines(),
+    "recent_chat": recent_chat_prompt_lines(channel, chat_id),
+    "token_status": token_status,
+    "bet_count": len(bets),
+    "execution_enabled": bool(token_stats.get("enabled")),
+  }
+
+
+def agent_system_prompt(context: dict[str, Any]) -> str:
+  market_context = "\n".join(context["market_lines"]) or "No current board rows."
+  thought_context = "\n".join(context["recent_thoughts"]) or "No recent agent thoughts yet."
+  chat_context = "\n".join(context["recent_chat"]) or "No recent chat history."
+  execution_rule = (
+    "Execution is enabled only through the autonomous backend loop and configured token ledger."
+    if context["execution_enabled"]
+    else "Execution is disabled because no token CA exists. Do not claim there is bankroll, steering, burns, payouts, or real bets."
+  )
+  return f"""
+You are CoverageDesk, the same sports-market agent whose read loop powers coveragedesk.online and Telegram.
+You are not a separate Telegram bot. Speak as the shared CoverageDesk agent watching the board.
+
+Operating rules:
+- Use the live context below. Do not invent balances, contract addresses, bets, burns, payouts, model data, or weather.
+- Distinguish modeled markets from unmodeled markets. If there is no model benchmark, say it is unrated.
+- Users cannot manually trigger betting decisions. The backend read loop runs automatically on schedule.
+- {execution_rule}
+- Keep Telegram replies concise, useful, and direct. Plain text only.
+- This is sports-market analysis, not financial advice.
+
+Board generated at: {context["generated_at"]}
+Board status: {context["board_status"]}
+Token/protocol state: {context["token_status"]}
+
+Top current board rows:
+{market_context}
+
+Recent CoverageDesk agent thoughts:
+{thought_context}
+
+Recent chat with this Telegram thread:
+{chat_context}
+""".strip()
+
+
+async def call_opencode_chat(user_message: str, context: dict[str, Any]) -> tuple[str, str]:
+  if not OPENCODE_API_KEY:
+    return fallback_agent_chat(user_message, context), "fallback"
+
+  payload = {
+    "model": OPENCODE_CHAT_MODEL,
+    "temperature": OPENCODE_CHAT_TEMPERATURE,
+    "messages": [
+      {"role": "system", "content": agent_system_prompt(context)},
+      {"role": "user", "content": user_message},
+    ],
+  }
+  headers = {
+    "Authorization": f"Bearer {OPENCODE_API_KEY}",
+    "Content-Type": "application/json",
+  }
+  async with httpx.AsyncClient(timeout=45.0) as client:
+    response = await client.post(f"{OPENCODE_API_BASE_URL}/chat/completions", headers=headers, json=payload)
+    response.raise_for_status()
+    data = response.json()
+  content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+  if not content:
+    content = fallback_agent_chat(user_message, context)
+  return content[:3500], OPENCODE_CHAT_MODEL
+
+
+def fallback_agent_chat(user_message: str, context: dict[str, Any]) -> str:
+  lines = context.get("market_lines") or []
+  top = lines[0] if lines else "No current board rows."
+  prefix = "I am in read-only mode until the token CA is configured. " if not context.get("execution_enabled") else ""
+  return (
+    f"{prefix}Current top board read:\n{top}\n\n"
+    "Ask me about a matchup, model gaps, latest agent thoughts, or why a row is unrated. "
+    "The autonomous read loop handles decisions on schedule; there is no manual trigger in chat or on the site."
+  )
+
+
+def store_agent_chat(channel: str, chat_id: str, user_name: str, user_message: str, assistant_message: str, model: str) -> None:
+  with connect() as conn:
+    conn.execute(
+      """
+      INSERT INTO agent_chat_messages (channel, chat_id, user_name, user_message, assistant_message, model, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      """,
+      (channel, chat_id, user_name, user_message, assistant_message, model, now_iso()),
+    )
+    conn.commit()
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
   return {
@@ -664,9 +900,12 @@ async def board() -> dict[str, Any]:
 
   for row in rows:
     game_id = row.get("game_id")
-    cursor.execute("SELECT holder_address, burned_tokens, underdog_bias, ncaaf_weight, nfl_weight, min_edge_threshold, custom_directive, created_at FROM steering_events WHERE game_id = ? ORDER BY id DESC LIMIT 1", (game_id,))
-    steer = cursor.fetchone()
-    row["steering"] = dict(steer) if steer else None
+    if COVERAGEDESK_TOKEN_CA:
+      cursor.execute("SELECT holder_address, burned_tokens, underdog_bias, ncaaf_weight, nfl_weight, min_edge_threshold, custom_directive, created_at FROM steering_events WHERE game_id = ? ORDER BY id DESC LIMIT 1", (game_id,))
+      steer = cursor.fetchone()
+      row["steering"] = dict(steer) if steer else None
+    else:
+      row["steering"] = None
 
     cursor.execute("SELECT id, thought, confidence, edge, bet_placed, created_at FROM agent_thoughts WHERE game_id = ? ORDER BY id DESC LIMIT 3", (game_id,))
     thoughts = [dict(r) for r in cursor.fetchall()]
@@ -700,6 +939,8 @@ def get_agent_thoughts(game_id: str | None = None, limit: int = 50) -> dict[str,
 
 @app.get("/api/agent/bets")
 def get_agent_bets(limit: int = 50) -> dict[str, Any]:
+  if not COVERAGEDESK_TOKEN_CA:
+    return {"enabled": False, "bets": [], "count": 0}
   conn = connect()
   cursor = conn.cursor()
   cursor.execute(
@@ -712,6 +953,13 @@ def get_agent_bets(limit: int = 50) -> dict[str, Any]:
 
 @app.get("/api/agent/token-stats")
 def get_token_stats() -> dict[str, Any]:
+  if not COVERAGEDESK_TOKEN_CA:
+    return {
+      "enabled": False,
+      "contract_address": None,
+      "token_symbol": None,
+      "message": "Token contract address is not configured",
+    }
   conn = connect()
   cursor = conn.cursor()
   cursor.execute(
@@ -719,21 +967,44 @@ def get_token_stats() -> dict[str, Any]:
   )
   row = cursor.fetchone()
   if not row:
-    return {"total_supply": 1_000_000_000.0, "bankroll_balance": 50000.0, "total_fees_collected": 0.0, "total_burned": 0.0, "total_distributed": 0.0, "total_wins": 0, "total_losses": 0, "win_rate": 0.0, "updated_at": now_iso()}
-  return dict(row)
+    return {
+      "enabled": True,
+      "contract_address": COVERAGEDESK_TOKEN_CA,
+      "token_symbol": COVERAGEDESK_TOKEN_SYMBOL,
+      "total_supply": 0.0,
+      "bankroll_balance": 0.0,
+      "total_fees_collected": 0.0,
+      "total_burned": 0.0,
+      "total_distributed": 0.0,
+      "total_wins": 0,
+      "total_losses": 0,
+      "win_rate": 0.0,
+      "updated_at": now_iso(),
+    }
+  return {
+    "enabled": True,
+    "contract_address": COVERAGEDESK_TOKEN_CA,
+    "token_symbol": COVERAGEDESK_TOKEN_SYMBOL,
+    **dict(row),
+  }
 
 
 @app.get("/api/agent/holders")
 def get_holders() -> dict[str, Any]:
+  if not COVERAGEDESK_TOKEN_CA:
+    return {"enabled": False, "contract_address": None, "holders": []}
   conn = connect()
   cursor = conn.cursor()
   cursor.execute("SELECT address, balance, percentage, is_dividend_eligible, is_steering_eligible, updated_at FROM holder_ledger ORDER BY percentage DESC")
   holders = [dict(row) for row in cursor.fetchall()]
-  return {"holders": holders}
+  return {"enabled": True, "contract_address": COVERAGEDESK_TOKEN_CA, "holders": holders}
 
 
 @app.post("/api/agent/steer-game")
 def submit_game_steering(payload: dict[str, Any]) -> dict[str, Any]:
+  if not COVERAGEDESK_TOKEN_CA:
+    raise HTTPException(status_code=503, detail="Token contract address is not configured")
+
   game_id = payload.get("game_id", "").strip()
   holder_address = payload.get("holder_address", "").strip()
   burned_tokens = float(payload.get("burned_tokens", 0.0))
@@ -754,7 +1025,10 @@ def submit_game_steering(payload: dict[str, Any]) -> dict[str, Any]:
   cursor.execute("SELECT percentage, balance FROM holder_ledger WHERE address = ?", (holder_address,))
   holder = cursor.fetchone()
 
-  percentage = holder["percentage"] if holder else 0.50
+  if not holder:
+    raise HTTPException(status_code=403, detail="Holder is not present in the token ledger")
+
+  percentage = holder["percentage"]
   if percentage < 0.50:
     raise HTTPException(status_code=403, detail="Line steering requires holding ≥ 0.5% of total supply (5,000,000 $CVR)")
 
@@ -773,6 +1047,33 @@ def submit_game_steering(payload: dict[str, Any]) -> dict[str, Any]:
   return {"ok": True, "message": f"Successfully burned {burned_tokens:,.0f} $CVR to steer line {game_id}!", "burned_tokens": burned_tokens}
 
 
+@app.post("/api/agent/chat")
+async def agent_chat(payload: dict[str, Any]) -> dict[str, Any]:
+  message = (payload.get("message") or "").strip()
+  channel = (payload.get("channel") or "web").strip()[:40]
+  chat_id = str(payload.get("chat_id") or "default").strip()[:120]
+  user_name = (payload.get("user_name") or "user").strip()[:120]
+
+  if not message:
+    raise HTTPException(status_code=400, detail="message is required")
+
+  context = await build_agent_chat_context(channel, chat_id)
+  try:
+    reply, model = await call_opencode_chat(message, context)
+  except Exception as exc:
+    reply = f"I could not reach the OpenCode model right now. {fallback_agent_chat(message, context)}"
+    model = f"fallback:{type(exc).__name__}"
+
+  store_agent_chat(channel, chat_id, user_name, message, reply, model)
+  return {
+    "ok": True,
+    "reply": reply,
+    "model": model,
+    "execution_enabled": context["execution_enabled"],
+    "generated_at": now_iso(),
+  }
+
+
 @app.post("/api/agent/tick")
 async def agent_tick() -> dict[str, Any]:
   board_data = await board()
@@ -787,6 +1088,7 @@ async def agent_tick() -> dict[str, Any]:
     steering = row.get("steering") or {
       "underdog_bias": 1.0, "ncaaf_weight": 1.0, "nfl_weight": 1.0, "min_edge_threshold": 1.5, "custom_directive": ""
     }
+    steering["execution_enabled"] = bool(COVERAGEDESK_TOKEN_CA)
     thought, bet = agent_engine.generate_thought_and_bet(row, steering)
     conn.execute(
       """
@@ -797,7 +1099,7 @@ async def agent_tick() -> dict[str, Any]:
     )
     new_thoughts.append(thought)
 
-    if bet:
+    if bet and COVERAGEDESK_TOKEN_CA:
       conn.execute(
         """
         INSERT OR IGNORE INTO agent_bets (id, game_id, matchup, sport, bet_side, line, odds, stake, status, payout, buyback_burned, dividend_distributed, created_at)
@@ -807,9 +1109,10 @@ async def agent_tick() -> dict[str, Any]:
       )
       new_bets.append(bet)
 
-  # Settle open bets simulation
-  cursor.execute("SELECT id, game_id, matchup, sport, bet_side, line, odds, stake, status, payout, buyback_burned, dividend_distributed, created_at, resolved_at FROM agent_bets WHERE status = 'OPEN'")
-  open_bets = [dict(r) for r in cursor.fetchall()]
+  open_bets = []
+  if COVERAGEDESK_TOKEN_CA:
+    cursor.execute("SELECT id, game_id, matchup, sport, bet_side, line, odds, stake, status, payout, buyback_burned, dividend_distributed, created_at, resolved_at FROM agent_bets WHERE status = 'OPEN'")
+    open_bets = [dict(r) for r in cursor.fetchall()]
 
   total_burned_delta = 0.0
   total_distributed_delta = 0.0
@@ -836,17 +1139,18 @@ async def agent_tick() -> dict[str, Any]:
         (settled["id"], settled["dividend_distributed"], eligible_count, f"0xpayout_{settled['id']}", now_iso())
       )
 
-  conn.execute(
-    """
-    UPDATE token_stats
-    SET total_burned = total_burned + ?,
-        total_distributed = total_distributed + ?,
-        total_wins = total_wins + ?,
-        updated_at = ?
-    WHERE id = 1
-    """,
-    (total_burned_delta, total_distributed_delta, len(open_bets), now_iso())
-  )
+  if COVERAGEDESK_TOKEN_CA:
+    conn.execute(
+      """
+      UPDATE token_stats
+      SET total_burned = total_burned + ?,
+          total_distributed = total_distributed + ?,
+          total_wins = total_wins + ?,
+          updated_at = ?
+      WHERE id = 1
+      """,
+      (total_burned_delta, total_distributed_delta, len(open_bets), now_iso())
+    )
 
   conn.commit()
   return {

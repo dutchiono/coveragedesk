@@ -91,6 +91,15 @@ type BoardRow = {
     line_move: number | null
     confidence_score: number
   }
+  rating?: {
+    grade: string
+    edge: number
+    summary: string
+    explanation: string
+    gap_points: number
+    price_edge_cents: number
+  }
+  steering?: SteeringStatus | null
   updated_at: string
 }
 
@@ -131,15 +140,19 @@ type AgentBet = {
 }
 
 type TokenStats = {
-  total_supply: number
-  bankroll_balance: number
-  total_fees_collected: number
-  total_burned: number
-  total_distributed: number
-  total_wins: number
-  total_losses: number
-  win_rate: number
-  updated_at: string
+  enabled?: boolean
+  contract_address?: string | null
+  token_symbol?: string | null
+  message?: string
+  total_supply?: number
+  bankroll_balance?: number
+  total_fees_collected?: number
+  total_burned?: number
+  total_distributed?: number
+  total_wins?: number
+  total_losses?: number
+  win_rate?: number
+  updated_at?: string
 }
 
 type Holder = {
@@ -181,6 +194,41 @@ function formatDate(value: string | null | undefined): string {
   }).format(date)
 }
 
+function localDateKey(value: string | null | undefined): string | null {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function todayDateKey(): string {
+  return localDateKey(new Date().toISOString()) ?? ''
+}
+
+function formatSlateKey(key: string | null): string {
+  if (!key) return 'No slate'
+  const date = new Date(`${key}T12:00:00`)
+  if (Number.isNaN(date.getTime())) return key
+  const today = todayDateKey()
+  if (key === today) return 'Today'
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date)
+}
+
+function targetSlateKey(rows: BoardRow[]): string | null {
+  const keys = rows
+    .map((row) => localDateKey(row.commence_time))
+    .filter((key): key is string => Boolean(key))
+    .sort()
+  if (!keys.length) return null
+
+  const today = todayDateKey()
+  if (keys.includes(today)) return today
+  return keys.find((key) => key > today) ?? keys[0]
+}
+
 function formatNumber(value: number | null | undefined, digits = 1): string {
   return value === null || value === undefined || !Number.isFinite(value) ? '-' : value.toFixed(digits)
 }
@@ -190,9 +238,9 @@ function formatSigned(value: number | null | undefined, digits = 1): string {
   return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`
 }
 
-function formatCoverage(value: number | null | undefined): string {
+function formatCoverage(value: number | null | undefined, symbol = 'CVR'): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-'
-  return `${value.toLocaleString('en-US', { maximumFractionDigits: 0 })} COVERAGE`
+  return `${value.toLocaleString('en-US', { maximumFractionDigits: 0 })} ${symbol.replace(/^\$/, '')}`
 }
 
 function formatPercent(value: number | null | undefined, digits = 0): string {
@@ -239,20 +287,32 @@ function weatherLabel(row: BoardRow): string {
   return `${condition ?? impact.category} ${formatSigned(impact.total_adjustment)} total`
 }
 
-function edgeGrade(row: BoardRow): 'prime' | 'strong' | 'lean' | 'watch' {
-  const gap = Math.abs(modelGap(row) ?? 0)
-  if (gap >= 4) return 'prime'
-  if (gap >= 2.5) return 'strong'
-  if (gap >= 1) return 'lean'
-  return 'watch'
+function isModeled(row: BoardRow): boolean {
+  return modelGap(row) !== null && row.rating?.summary !== 'Unmodeled market'
 }
 
-function edgeGradeLabel(row: BoardRow): string {
-  const grade = edgeGrade(row)
-  if (grade === 'prime') return 'Prime'
-  if (grade === 'strong') return 'Strong'
-  if (grade === 'lean') return 'Lean'
-  return 'Watch'
+function ratingLabel(row: BoardRow): string {
+  if (!isModeled(row)) return 'Unrated'
+  if (!row.rating) return 'Model'
+  return row.rating?.grade ?? 'Fair'
+}
+
+function ratingValue(row: BoardRow): string {
+  if (!isModeled(row)) return 'No model'
+  const cents = row.rating?.price_edge_cents
+  if (cents !== null && cents !== undefined && Number.isFinite(cents) && Math.abs(cents) >= 0.1) {
+    return `${cents > 0 ? '+' : ''}${cents.toFixed(1)}c`
+  }
+  return formatSigned(modelGap(row))
+}
+
+function ratingClass(row: BoardRow): string {
+  if (!isModeled(row)) return 'unrated'
+  const grade = (row.rating?.grade ?? 'Even').toLowerCase().replace(/\s+/g, '-')
+  if (grade.includes('strong-buy')) return 'prime'
+  if (grade === 'buy') return 'strong'
+  if (grade.includes('avoid')) return 'avoid'
+  return 'lean'
 }
 
 function normalize(value: string): string {
@@ -286,8 +346,9 @@ async function fetchBoard(): Promise<BoardResponse> {
 export function App() {
   const [activeTab, setActiveTab] = useState<TabName>('board')
   const [board, setBoard] = useState<BoardResponse>(emptyBoard)
-  const [selectedSport, setSelectedSport] = useState<SportLabel>('ALL')
+  const [selectedSport, setSelectedSport] = useState<SportLabel>('NCAAF')
   const [teamSearch, setTeamSearch] = useState('')
+  const [showAllGames, setShowAllGames] = useState(false)
   const [selectedGameId, setSelectedGameId] = useState<string>('')
   const [refreshing, setRefreshing] = useState(false)
 
@@ -295,29 +356,25 @@ export function App() {
   const [agentBets, setAgentBets] = useState<AgentBet[]>([])
   const [tokenStats, setTokenStats] = useState<TokenStats | null>(null)
   const [holders, setHolders] = useState<Holder[]>([])
-  const [steeringStatus, setSteeringStatus] = useState<SteeringStatus | null>(null)
-  const [tickMessage, setTickMessage] = useState<string | null>(null)
-  const [isTicking, setIsTicking] = useState(false)
 
-  const [steerAddress, setSteerAddress] = useState('5vRt8...SteeringHolder')
-  const [steerBurnTokens, setSteerBurnTokens] = useState(250000)
-  const [steerUnderdogBias, setSteerUnderdogBias] = useState(1.25)
-  const [steerNcaafWeight, setSteerNcaafWeight] = useState(1.2)
+  const [steerAddress, setSteerAddress] = useState('')
+  const [steerBurnTokens, setSteerBurnTokens] = useState(0)
+  const [steerUnderdogBias, setSteerUnderdogBias] = useState(1)
+  const [steerNcaafWeight, setSteerNcaafWeight] = useState(1)
   const [steerNflWeight, setSteerNflWeight] = useState(1)
   const [steerMinEdge, setSteerMinEdge] = useState(1.5)
-  const [steerDirective, setSteerDirective] = useState('Prioritize bad weather college football underdogs with high line movement.')
+  const [steerDirective, setSteerDirective] = useState('')
   const [steerMessage, setSteerMessage] = useState<string | null>(null)
 
   async function loadData(showRefreshing = true) {
     if (showRefreshing) setRefreshing(true)
     try {
-      const [boardRes, thoughtsRes, betsRes, statsRes, holdersRes, steerRes] = await Promise.all([
+      const [boardRes, thoughtsRes, betsRes, statsRes, holdersRes] = await Promise.all([
         fetchBoard(),
         fetch('/api/agent/thoughts').then((response) => response.json()).catch(() => ({ thoughts: [] })),
         fetch('/api/agent/bets').then((response) => response.json()).catch(() => ({ bets: [] })),
         fetch('/api/agent/token-stats').then((response) => response.json()).catch(() => null),
         fetch('/api/agent/holders').then((response) => response.json()).catch(() => ({ holders: [] })),
-        fetch('/api/agent/steering-status').then((response) => response.json()).catch(() => null),
       ])
 
       if (boardRes && Array.isArray(boardRes.rows)) setBoard(boardRes)
@@ -325,7 +382,6 @@ export function App() {
       if (betsRes && Array.isArray(betsRes.bets)) setAgentBets(betsRes.bets)
       if (statsRes) setTokenStats(statsRes)
       if (holdersRes && Array.isArray(holdersRes.holders)) setHolders(holdersRes.holders)
-      if (steerRes) setSteeringStatus(steerRes)
     } finally {
       if (showRefreshing) setRefreshing(false)
     }
@@ -339,34 +395,15 @@ export function App() {
     return () => window.clearInterval(timer)
   }, [])
 
-  async function triggerAgentTick() {
-    setIsTicking(true)
-    setTickMessage('Running market evaluation cycle...')
-    try {
-      const response = await fetch('/api/agent/tick', { method: 'POST' }).then((r) => r.json())
-      if (response.ok) {
-        setTickMessage(
-          `Cycle complete: ${response.processed_thoughts} reads, ${response.placed_bets} wagers, ${formatCoverage(response.buyback_burned_tokens)} burned.`,
-        )
-        await loadData()
-      } else {
-        setTickMessage('Agent cycle failed.')
-      }
-    } catch {
-      setTickMessage('Agent cycle could not reach the backend.')
-    } finally {
-      setIsTicking(false)
-    }
-  }
-
   async function handleSteerSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setSteerMessage('Submitting steering burn...')
     try {
-      const response = await fetch('/api/agent/steer', {
+      const response = await fetch('/api/agent/steer-game', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          game_id: selectedRow?.game_id,
           holder_address: steerAddress,
           burned_tokens: steerBurnTokens,
           underdog_bias: steerUnderdogBias,
@@ -378,7 +415,7 @@ export function App() {
       }).then((r) => r.json())
 
       if (response.ok) {
-        setSteerMessage(`Burn accepted: ${formatCoverage(steerBurnTokens)} committed to strategy weights.`)
+        setSteerMessage(`Burn accepted: ${formatCoverage(steerBurnTokens, tokenStats?.token_symbol ?? 'CVR')} committed to this market.`)
         await loadData()
       } else {
         setSteerMessage(`Steering rejected: ${response.detail || 'holder is not qualified.'}`)
@@ -388,16 +425,26 @@ export function App() {
     }
   }
 
-  const rows = useMemo(() => {
+  const baseRows = useMemo(() => {
     return board.rows
       .filter((row) => selectedSport === 'ALL' || row.sport === selectedSport)
       .filter((row) => rowMatches(row, teamSearch))
+  }, [board.rows, selectedSport, teamSearch])
+
+  const slateKey = useMemo(() => targetSlateKey(baseRows), [baseRows])
+
+  const rows = useMemo(() => {
+    return baseRows
+      .filter((row) => showAllGames || localDateKey(row.commence_time) === slateKey)
       .sort((a, b) => {
+        const aModeled = isModeled(a) ? 1 : 0
+        const bModeled = isModeled(b) ? 1 : 0
+        if (aModeled !== bModeled) return bModeled - aModeled
         const aEdge = a.edge_score ?? Math.abs(modelGap(a) ?? 0) * 20
         const bEdge = b.edge_score ?? Math.abs(modelGap(b) ?? 0) * 20
         return bEdge - aEdge || Math.abs(modelGap(b) ?? 0) - Math.abs(modelGap(a) ?? 0)
       })
-  }, [board.rows, selectedSport, teamSearch])
+  }, [baseRows, showAllGames, slateKey])
 
   const selectedRow = rows.find((row) => row.game_id === selectedGameId) ?? rows[0] ?? null
   const openBets = agentBets.filter((bet) => bet.status === 'OPEN').length
@@ -407,6 +454,16 @@ export function App() {
     if (!gap) return largest
     return largest === null || gap > largest ? gap : largest
   }, null)
+  const protocolEnabled = tokenStats?.enabled === true
+  const tokenSymbol = tokenStats?.token_symbol ?? 'CVR'
+  const modeledCount = rows.filter(isModeled).length
+  const slateLabel = showAllGames ? 'All dates' : formatSlateKey(slateKey)
+
+  useEffect(() => {
+    if (!protocolEnabled && (activeTab === 'tokenomics' || activeTab === 'steering')) {
+      setActiveTab('board')
+    }
+  }, [activeTab, protocolEnabled])
 
   return (
     <main className="shell">
@@ -423,8 +480,10 @@ export function App() {
           {[
             ['board', 'Board'],
             ['agent', `Agent ${agentBets.length}`],
-            ['tokenomics', 'Token'],
-            ['steering', 'Steering'],
+            ...(protocolEnabled ? [
+              ['tokenomics', 'Token'],
+              ['steering', 'Steering'],
+            ] : []),
           ].map(([tab, label]) => (
             <button className={activeTab === tab ? 'active' : ''} key={tab} onClick={() => setActiveTab(tab as TabName)} type="button">
               {label}
@@ -459,21 +518,33 @@ export function App() {
                 ))}
               </div>
             </div>
+
+            <label className="check-field">
+              <input
+                checked={showAllGames}
+                onChange={(event) => setShowAllGames(event.target.checked)}
+                type="checkbox"
+              />
+              <span>Show all dates</span>
+            </label>
           </>
         )}
 
         <div className="feed-note">
           <span>{refreshing ? 'Refreshing markets' : 'Auto refresh: 5 min'}</span>
           <small>{rows.length.toLocaleString()} ranked markets</small>
+          <small>{slateLabel}</small>
           <small>{board.source === 'preview' ? 'Preview feed' : board.source === 'kalshi' ? 'Kalshi feed' : 'Sportsbook feed'}</small>
         </div>
 
-        <div className="side-ledger">
-          <span>Bankroll</span>
-          <strong>{formatCoverage(tokenStats?.bankroll_balance)}</strong>
-          <small>Burned {formatCoverage(tokenStats?.total_burned)}</small>
-          <small>Paid {formatCoverage(tokenStats?.total_distributed)}</small>
-        </div>
+        {protocolEnabled && (
+          <div className="side-ledger">
+            <span>{tokenSymbol} contract</span>
+            <strong>{compactAddress(tokenStats?.contract_address ?? '')}</strong>
+            <small>Burned {formatCoverage(tokenStats?.total_burned, tokenSymbol)}</small>
+            <small>Paid {formatCoverage(tokenStats?.total_distributed, tokenSymbol)}</small>
+          </div>
+        )}
       </aside>
 
       <section className="content">
@@ -481,24 +552,19 @@ export function App() {
           <div>
             <p className="eyebrow">coveragedesk.online</p>
             <h2>
-              {activeTab === 'board' && 'Football spread desk'}
+              {activeTab === 'board' && `${selectedSport === 'ALL' ? 'Football' : selectedSport} board`}
               {activeTab === 'agent' && 'Agent ledger'}
               {activeTab === 'tokenomics' && 'Token ledger'}
               {activeTab === 'steering' && 'Holder steering'}
             </h2>
             <p className="board-meta">
-              {activeTab === 'board' && `${rows.length.toLocaleString()} markets | Top gap ${formatSigned(topGap)} | Updated ${formatDate(board.generated_at)}`}
+              {activeTab === 'board' && `${rows.length.toLocaleString()} markets | ${slateLabel} | ${modeledCount.toLocaleString()} modeled | Top gap ${formatSigned(topGap)} | Updated ${formatDate(board.generated_at)}`}
               {activeTab === 'agent' && `${openBets} open wagers | ${settledBets} settled | ${agentThoughts.length} market reads`}
-              {activeTab === 'tokenomics' && `${formatCoverage(tokenStats?.total_supply)} supply | ${formatPercent(tokenStats?.win_rate, 0)} win rate`}
-              {activeTab === 'steering' && `Minimum edge ${formatNumber(steeringStatus?.min_edge_threshold)} pts | Last burn ${formatCoverage(steeringStatus?.burned_tokens)}`}
+              {activeTab === 'tokenomics' && `${formatCoverage(tokenStats?.total_supply, tokenSymbol)} supply | ${formatPercent(tokenStats?.win_rate, 0)} win rate`}
+              {activeTab === 'steering' && `${selectedRow ? `${selectedRow.away_team} at ${selectedRow.home_team}` : 'Select a market'} | ${tokenSymbol} enabled`}
             </p>
           </div>
-          <button className="primary action-btn" disabled={isTicking} onClick={triggerAgentTick} type="button">
-            {isTicking ? 'Running cycle' : 'Run decision cycle'}
-          </button>
         </header>
-
-        {tickMessage && <div className="notice">{tickMessage}</div>}
 
         {activeTab === 'board' && (
           <>
@@ -512,8 +578,8 @@ export function App() {
                 <strong>{formatSigned(topGap)}</strong>
               </div>
               <div>
-                <span>Bankroll</span>
-                <strong>{formatCoverage(tokenStats?.bankroll_balance)}</strong>
+                <span>Modeled</span>
+                <strong>{modeledCount.toLocaleString()}</strong>
               </div>
               <div>
                 <span>Open bets</span>
@@ -531,9 +597,9 @@ export function App() {
                         <h3>{selectedRow.away_team} at {selectedRow.home_team}</h3>
                         <p>{selectedRow.contract?.title ?? consensusLabel(selectedRow)}</p>
                       </div>
-                      <div className={`ticket-rating ${edgeGrade(selectedRow)}`}>
-                        <span>{edgeGradeLabel(selectedRow)}</span>
-                        <strong>{formatPercent(selectedRow.metrics.confidence_score)}</strong>
+                      <div className={`ticket-rating ${ratingClass(selectedRow)}`}>
+                        <span>{ratingLabel(selectedRow)}</span>
+                        <strong>{ratingValue(selectedRow)}</strong>
                       </div>
                     </div>
 
@@ -573,9 +639,9 @@ export function App() {
                       <small>Updated {formatDate(selectedRow.updated_at)}</small>
                     </div>
                     <div>
-                      <span>Protocol read</span>
-                      <strong>{edgeGradeLabel(selectedRow)} edge</strong>
-                      <small>Model gap {formatSigned(modelGap(selectedRow))}</small>
+                      <span>Market read</span>
+                      <strong>{isModeled(selectedRow) ? (selectedRow.rating?.summary ?? 'Modeled edge') : 'No model benchmark'}</strong>
+                      <small>{isModeled(selectedRow) ? (selectedRow.rating?.explanation ?? `Model gap ${formatSigned(modelGap(selectedRow))}`) : 'Hidden from rating math until Blue Chip/model data exists.'}</small>
                       <small>Weather {weatherLabel(selectedRow)}</small>
                     </div>
                   </div>
@@ -632,9 +698,9 @@ export function App() {
                       </span>
                       <span className="row-rating">
                         <span className="mobile-label">Read</span>
-                        <span className={`rating-pill ${edgeGrade(row)}`}>
-                          <strong>{edgeGradeLabel(row)}</strong>
-                          <span>{formatPercent(row.metrics.confidence_score)}</span>
+                        <span className={`rating-pill ${ratingClass(row)}`}>
+                          <strong>{ratingLabel(row)}</strong>
+                          <span>{ratingValue(row)}</span>
                         </span>
                       </span>
                       <span className="row-weather">
@@ -687,21 +753,21 @@ export function App() {
             <section className="panel">
               <div className="panel-heading compact">
                 <div>
-                  <h3>Bet ledger</h3>
-                  <p>Settled wins split profit between burns and qualified holders.</p>
+                  <h3>{protocolEnabled ? 'Bet ledger' : 'Execution disabled'}</h3>
+                  <p>{protocolEnabled ? 'Settled wins split profit between burns and qualified holders.' : 'Add the token CA before CoverageDesk can track bankroll wagers, burns, or payouts.'}</p>
                 </div>
               </div>
               <div className="ledger-list">
-                {agentBets.length ? agentBets.map((bet) => (
+                {!protocolEnabled ? <div className="empty">Read-only market mode. No token bankroll is configured.</div> : agentBets.length ? agentBets.map((bet) => (
                   <article className="ledger-row" key={bet.id}>
                     <div>
                       <strong>{bet.matchup}</strong>
                       <small>{bet.bet_side} / {bet.sport}</small>
                     </div>
-                    <span>{formatCoverage(bet.stake)}</span>
+                    <span>{formatCoverage(bet.stake, tokenSymbol)}</span>
                     <span className={`status-badge ${bet.status.toLowerCase()}`}>{bet.status}</span>
-                    <span>{formatCoverage(bet.buyback_burned)}</span>
-                    <span>{formatCoverage(bet.dividend_distributed)}</span>
+                    <span>{formatCoverage(bet.buyback_burned, tokenSymbol)}</span>
+                    <span>{formatCoverage(bet.dividend_distributed, tokenSymbol)}</span>
                   </article>
                 )) : <div className="empty">No bets recorded yet.</div>}
               </div>
@@ -709,24 +775,24 @@ export function App() {
           </div>
         )}
 
-        {activeTab === 'tokenomics' && (
+        {activeTab === 'tokenomics' && protocolEnabled && (
           <div className="tokenomics-layout">
             <section className="metrics">
               <div>
                 <span>Total supply</span>
-                <strong>{formatCoverage(tokenStats?.total_supply)}</strong>
+                <strong>{formatCoverage(tokenStats?.total_supply, tokenSymbol)}</strong>
               </div>
               <div>
                 <span>Bankroll</span>
-                <strong>{formatCoverage(tokenStats?.bankroll_balance)}</strong>
+                <strong>{formatCoverage(tokenStats?.bankroll_balance, tokenSymbol)}</strong>
               </div>
               <div>
                 <span>Total burned</span>
-                <strong>{formatCoverage(tokenStats?.total_burned)}</strong>
+                <strong>{formatCoverage(tokenStats?.total_burned, tokenSymbol)}</strong>
               </div>
               <div>
                 <span>Holder payouts</span>
-                <strong>{formatCoverage(tokenStats?.total_distributed)}</strong>
+                <strong>{formatCoverage(tokenStats?.total_distributed, tokenSymbol)}</strong>
               </div>
             </section>
 
@@ -748,7 +814,7 @@ export function App() {
                 {holders.map((holder) => (
                   <div className="holder-row" key={holder.address}>
                     <strong>{compactAddress(holder.address)}</strong>
-                    <span>{formatCoverage(holder.balance)}</span>
+                    <span>{formatCoverage(holder.balance, tokenSymbol)}</span>
                     <span>{holder.percentage.toFixed(2)}%</span>
                     <span className={holder.is_dividend_eligible ? 'yes' : 'no'}>{holder.is_dividend_eligible ? 'Qualified' : 'Below tier'}</span>
                     <span className={holder.is_steering_eligible ? 'yes' : 'no'}>{holder.is_steering_eligible ? 'Qualified' : 'Below tier'}</span>
@@ -759,50 +825,54 @@ export function App() {
           </div>
         )}
 
-        {activeTab === 'steering' && (
+        {activeTab === 'steering' && protocolEnabled && (
           <div className="two-column steering-layout">
             <section className="panel">
               <div className="panel-heading compact">
                 <div>
-                  <h3>Active weights</h3>
-                  <p>Current community inputs applied to the decision cycle.</p>
+                  <h3>Selected market steering</h3>
+                  <p>{selectedRow ? `${selectedRow.away_team} at ${selectedRow.home_team}` : 'Select a market on the board first.'}</p>
                 </div>
               </div>
-              <div className="weights-grid">
-                <div>
-                  <span>Underdog bias</span>
-                  <strong>{formatNumber(steeringStatus?.underdog_bias, 2)}x</strong>
+              {selectedRow?.steering ? (
+                <div className="weights-grid">
+                  <div>
+                    <span>Underdog bias</span>
+                    <strong>{formatNumber(selectedRow.steering.underdog_bias, 2)}x</strong>
+                  </div>
+                  <div>
+                    <span>NCAAF weight</span>
+                    <strong>{formatNumber(selectedRow.steering.ncaaf_weight, 2)}x</strong>
+                  </div>
+                  <div>
+                    <span>NFL weight</span>
+                    <strong>{formatNumber(selectedRow.steering.nfl_weight, 2)}x</strong>
+                  </div>
+                  <div>
+                    <span>Min edge</span>
+                    <strong>{formatNumber(selectedRow.steering.min_edge_threshold)} pts</strong>
+                  </div>
+                  <div className="directive-box">
+                    <span>Directive</span>
+                    <strong>{selectedRow.steering.custom_directive || 'No directive text'}</strong>
+                  </div>
                 </div>
-                <div>
-                  <span>NCAAF weight</span>
-                  <strong>{formatNumber(steeringStatus?.ncaaf_weight, 2)}x</strong>
-                </div>
-                <div>
-                  <span>NFL weight</span>
-                  <strong>{formatNumber(steeringStatus?.nfl_weight, 2)}x</strong>
-                </div>
-                <div>
-                  <span>Min edge</span>
-                  <strong>{formatNumber(steeringStatus?.min_edge_threshold)} pts</strong>
-                </div>
-                <div className="directive-box">
-                  <span>Directive</span>
-                  <strong>{steeringStatus?.custom_directive ?? 'Default strategy'}</strong>
-                </div>
-              </div>
+              ) : (
+                <div className="empty">No steering burn has been recorded for this market.</div>
+              )}
             </section>
 
             <section className="panel">
               <div className="panel-heading compact">
                 <div>
                   <h3>Submit steering burn</h3>
-                  <p>Qualified holders can burn tokens to adjust weights.</p>
+                  <p>Qualified holders can burn real {tokenSymbol} to adjust this selected market.</p>
                 </div>
               </div>
               <form className="steer-form" onSubmit={handleSteerSubmit}>
                 <label>
                   <span>Holder wallet</span>
-                  <input onChange={(event) => setSteerAddress(event.target.value)} required type="text" value={steerAddress} />
+                  <input onChange={(event) => setSteerAddress(event.target.value)} placeholder="Wallet address" required type="text" value={steerAddress} />
                 </label>
                 <label>
                   <span>Tokens to burn</span>
@@ -836,7 +906,7 @@ export function App() {
                   <span>Strategy directive</span>
                   <textarea onChange={(event) => setSteerDirective(event.target.value)} rows={4} value={steerDirective} />
                 </label>
-                <button className="primary" type="submit">Burn and apply weights</button>
+                <button className="primary" disabled={!selectedRow} type="submit">Burn and apply to selected market</button>
               </form>
               {steerMessage && <div className="notice compact-notice">{steerMessage}</div>}
             </section>

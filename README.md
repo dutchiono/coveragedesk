@@ -11,6 +11,7 @@ React/Vite dashboard plus FastAPI backend for autonomous sports spread market mo
 - **Holder Steering Engine**: Holders with **≥ 0.5%** supply can burn tokens to inject strategy weights (underdog bias, sport focus, edge threshold, strategy directive)
 - Backend spread ingestion from The Odds API & read-only Kalshi fallback
 - Blue Chip Analytics enrichment for NCAAF model line, gap, and weather impact
+- Shared agent chat endpoint for the website and Telegram. Telegram talks to the same backend board, thought log, token state, and scheduled decision loop rather than running parallel bot logic.
 - Independent server deployment configuration for `coveragedesk.online` (Port 8800)
 
 ## Local development
@@ -30,6 +31,29 @@ python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 COVERAGEDESK_DB=data/coveragedesk.sqlite3 .venv/bin/uvicorn main:app --host 127.0.0.1 --port 8800
 ```
+
+Agent loop and chat:
+
+```bash
+# defaults to true and 1 hour
+COVERAGEDESK_AGENT_AUTORUN=true
+COVERAGEDESK_AGENT_INTERVAL_SECONDS=3600
+
+# shared website/Telegram chat model
+OPENCODE_API_KEY=...
+OPENCODE_API_BASE_URL=https://api.opencode.ai/v1
+OPENCODE_CHAT_MODEL=opencode/gpt-5.1-codex
+```
+
+Telegram bridge:
+
+```bash
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_BOT_USERNAME=coveragedesk_bot
+COVERAGEDESK_API=http://127.0.0.1:8800
+```
+
+Do not expose manual agent-run controls in the frontend. The backend loop owns scheduled reads and any future execution.
 
 ## Production build
 

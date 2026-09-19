@@ -119,12 +119,14 @@ button {
 }
 
 .field,
+.check-field,
 .steer-form label {
   display: grid;
   gap: 8px;
 }
 
 .field span,
+.check-field span,
 .steer-form label span {
   color: #d9dfd6;
   font-size: 0.84rem;
@@ -159,6 +161,22 @@ button {
 
 .segmented button {
   text-align: center;
+}
+
+.check-field {
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+  border: 1px solid #3c4a43;
+  border-radius: 6px;
+  background: #0f1513;
+  padding: 11px 12px;
+}
+
+.check-field input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #d4f07d;
 }
 
 .feed-note,
@@ -223,10 +241,6 @@ button {
   color: #4f5652;
   font-size: 0.92rem;
   font-weight: 700;
-}
-
-.action-btn {
-  white-space: nowrap;
 }
 
 .notice {
@@ -362,6 +376,18 @@ button {
 .rating-pill.watch {
   background: #ebe7df;
   color: #535a56;
+}
+
+.ticket-rating.unrated,
+.rating-pill.unrated {
+  background: #ebe7df;
+  color: #535a56;
+}
+
+.ticket-rating.avoid,
+.rating-pill.avoid {
+  background: #ffe3dd;
+  color: #7f2418;
 }
 
 .ticket-grid {
@@ -726,10 +752,6 @@ button {
 
   .topbar {
     flex-direction: column;
-  }
-
-  .action-btn {
-    width: 100%;
   }
 
   .metrics {

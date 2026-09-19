@@ -28,6 +28,7 @@ def generate_thought_and_bet(board_row: dict[str, Any], steering_weights: dict[s
     sport_weight = steering_weights.get("ncaaf_weight", 1.0) if sport == "NCAAF" else steering_weights.get("nfl_weight", 1.0)
     min_edge_threshold = steering_weights.get("min_edge_threshold", 1.5)
     custom_directive = steering_weights.get("custom_directive", "")
+    execution_enabled = steering_weights.get("execution_enabled", True)
 
     # Market details
     market = board_row.get("market", {})
@@ -58,9 +59,14 @@ def generate_thought_and_bet(board_row: dict[str, Any], steering_weights: dict[s
         f"Adjusted Edge: {adjusted_edge:.2f} (Sport Weight: {sport_weight:.2f}, Underdog Bias: {underdog_bias:.2f}). Required Min Edge: {min_edge_threshold:.1f} pts."
     )
 
-    should_place_bet = adjusted_edge >= min_edge_threshold and consensus_spread is not None
+    should_place_bet = execution_enabled and adjusted_edge >= min_edge_threshold and consensus_spread is not None
 
-    if should_place_bet:
+    if not execution_enabled:
+        thought_parts.append(
+            "DECISION: READ ONLY. No token contract/bankroll is configured, so CoverageDesk records the market read without executing a wager."
+        )
+        bet_obj = None
+    elif should_place_bet:
         side_label = f"{away_team} {consensus_spread}"
         stake = round(random.uniform(500, 2500), 2)
         thought_parts.append(
