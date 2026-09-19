@@ -6,6 +6,7 @@ import re
 import sqlite3
 import statistics
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,14 @@ def slugify(value: str) -> str:
 
 
 def matchup_key(away_team: str, home_team: str) -> str:
-  return "|".join(sorted([slugify(away_team), slugify(home_team)]))
+  return "|".join(sorted([team_key(away_team), team_key(home_team)]))
+
+
+def team_key(value: str) -> str:
+  normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+  normalized = re.sub(r"\bst[.]?\b", "state", normalized, flags=re.I)
+  normalized = normalized.replace("&", " and ")
+  return slugify(normalized)
 
 
 def connect() -> sqlite3.Connection:
@@ -270,18 +278,28 @@ async def fetch_odds() -> tuple[list[dict[str, Any]], str]:
 
 
 async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
-  limit = int(os.getenv("KALSHI_MARKET_LIMIT", "100"))
+  limit = int(os.getenv("KALSHI_MARKET_LIMIT", "1000"))
+  max_pages = int(os.getenv("KALSHI_MAX_PAGES", "10"))
   captured_at = now_iso()
   board: list[dict[str, Any]] = []
   bluechip_games = await fetch_bluechip_games()
   async with httpx.AsyncClient(timeout=25) as client:
     for sport_name, series_ticker in KALSHI_SPREAD_SERIES.items():
-      response = await client.get(
-        f"{KALSHI_API_URL}/markets",
-        params={"series_ticker": series_ticker, "status": "open", "limit": limit},
-      )
-      response.raise_for_status()
-      for market in response.json().get("markets", []):
+      markets: list[dict[str, Any]] = []
+      cursor = ""
+      for _ in range(max_pages):
+        params = {"series_ticker": series_ticker, "status": "open", "limit": limit}
+        if cursor:
+          params["cursor"] = cursor
+        response = await client.get(f"{KALSHI_API_URL}/markets", params=params)
+        response.raise_for_status()
+        payload = response.json()
+        markets.extend(payload.get("markets", []))
+        cursor = payload.get("cursor") or ""
+        if not cursor:
+          break
+
+      for market in markets:
         away_team, home_team = extract_matchup(market)
         bluechip = bluechip_games.get(matchup_key(away_team, home_team)) if sport_name == "NCAAF" else None
         yes_bid = dollars_to_float(market.get("yes_bid_dollars"))
