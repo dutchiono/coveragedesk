@@ -1,8 +1,11 @@
 import csv
+import asyncio
+import html
 import os
 import re
 import sqlite3
 import statistics
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,11 +17,14 @@ API_URL = "https://api.the-odds-api.com/v4/sports/{sport}/odds"
 SPORTS = {"NFL": "americanfootball_nfl", "NCAAF": "americanfootball_ncaaf"}
 KALSHI_API_URL = "https://external-api.kalshi.com/trade-api/v2"
 KALSHI_SPREAD_SERIES = {"NFL": "KXNFLSPREAD", "NCAAF": "KXNCAAFSPREAD"}
+BLUECHIP_WEEK_URL = os.getenv("BLUECHIP_WEEK_URL", "https://bluechipanalytics.com/college-football/games/2026/week3/")
+BLUECHIP_CACHE_SECONDS = int(os.getenv("BLUECHIP_CACHE_SECONDS", "1800"))
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("MARKBETS_DB", ROOT / "data" / "markbets.sqlite3"))
 PROJECTIONS_PATH = Path(os.getenv("MARKBETS_PROJECTIONS", ROOT / "data" / "projections.csv"))
 
 app = FastAPI(title="MarkBets API")
+BLUECHIP_CACHE: dict[str, Any] = {"expires_at": 0.0, "games": {}}
 
 
 def now_iso() -> str:
@@ -33,6 +39,10 @@ def canonical_id(sport: str, commence_time: str, away_team: str, home_team: str)
 
 def slugify(value: str) -> str:
   return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+
+
+def matchup_key(away_team: str, home_team: str) -> str:
+  return "|".join(sorted([slugify(away_team), slugify(home_team)]))
 
 
 def connect() -> sqlite3.Connection:
@@ -91,6 +101,111 @@ def extract_matchup(market: dict[str, Any]) -> tuple[str, str]:
   title = (market.get("title") or "").replace("?", "")
   team = title.split(" wins", 1)[0] or market.get("yes_sub_title") or "Kalshi"
   return team, "Market"
+
+
+def clean_text(value: str | None) -> str | None:
+  if value is None:
+    return None
+  return html.unescape(value).replace("\ufffd", "°").strip()
+
+
+def signed_line(team: str | None, spread: float | None) -> str | None:
+  if not team or spread is None:
+    return None
+  return f"{team} {spread:+.1f}".replace("+", "")
+
+
+def parse_bluechip_game(page: str, url: str) -> dict[str, Any] | None:
+  title_match = re.search(r"<title>(.*?)\s+Prediction,", page, re.I | re.S)
+  if not title_match:
+    return None
+  teams = clean_text(re.sub(r"\s+", " ", title_match.group(1))).split(" vs ")
+  if len(teams) != 2:
+    return None
+  away_team, home_team = teams
+
+  line_match = re.search(
+    r"The market has (?P<market_team>.+?) (?P<market_spread>[+-]?\d+(?:\.\d+)?) and the Blue Chip model makes it (?P<model_team>.+?) (?P<model_spread>[+-]?\d+(?:\.\d+)?) - a gap of (?P<gap>\d+(?:\.\d+)?) points toward (?P<edge_team>.+?)(?:,|\.)",
+    page,
+    re.I | re.S,
+  )
+  weather_match = re.search(
+    r"The forecast for (?P<venue>.+?) shows (?P<condition>.+?), (?P<temp>\d+(?:\.\d+)?)\s*[°\ufffd]F with winds of (?P<wind>\d+(?:\.\d+)?) mph",
+    page,
+    re.I | re.S,
+  )
+  desc_match = re.search(r'<meta name="description" content="([^"]+)"', page, re.I)
+  image_match = re.search(r'<meta property="og:image"\s+content="([^"]+)"', page, re.I)
+  modified_match = re.search(r'"dateModified":\s*"([^"]+)"', page, re.I)
+
+  market_team = clean_text(line_match.group("market_team")) if line_match else None
+  model_team = clean_text(line_match.group("model_team")) if line_match else None
+  market_spread = float(line_match.group("market_spread")) if line_match else None
+  model_spread = float(line_match.group("model_spread")) if line_match else None
+
+  return {
+    "away_team": away_team,
+    "home_team": home_team,
+    "market_line": signed_line(market_team, market_spread),
+    "model_line": signed_line(model_team, model_spread),
+    "market_team": market_team,
+    "model_team": model_team,
+    "market_spread": market_spread,
+    "model_spread": model_spread,
+    "gap": float(line_match.group("gap")) if line_match else None,
+    "edge_team": clean_text(line_match.group("edge_team")) if line_match else None,
+    "summary": clean_text(desc_match.group(1)) if desc_match else None,
+    "weather": {
+      "venue": clean_text(weather_match.group("venue")) if weather_match else None,
+      "condition": clean_text(weather_match.group("condition")) if weather_match else None,
+      "temperature_f": float(weather_match.group("temp")) if weather_match else None,
+      "wind_mph": float(weather_match.group("wind")) if weather_match else None,
+      "source": "WeatherAPI.com",
+      "map_url": clean_text(image_match.group(1)) if image_match else None,
+    },
+    "source": "Blue Chip Analytics",
+    "url": url,
+    "updated_at": clean_text(modified_match.group(1)) if modified_match else None,
+  }
+
+
+async def fetch_bluechip_games() -> dict[str, dict[str, Any]]:
+  if not BLUECHIP_WEEK_URL:
+    return {}
+  now = time.time()
+  if BLUECHIP_CACHE["expires_at"] > now:
+    return BLUECHIP_CACHE["games"]
+
+  async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
+    response = await client.get(BLUECHIP_WEEK_URL)
+    response.raise_for_status()
+    week_page = response.text
+    urls = sorted(
+      {
+        url if url.startswith("http") else f"https://bluechipanalytics.com{url}"
+        for url in re.findall(r'https://bluechipanalytics\.com/college-football/games/2026/week\d+/2026-[^"]+?/|href="(/college-football/games/2026/week\d+/2026-[^"]+?/)"', week_page)
+        for url in ((url,) if isinstance(url, str) else url)
+        if url
+      }
+    )
+    if not urls:
+      urls = sorted(set(re.findall(r"https://bluechipanalytics\.com/college-football/games/2026/week\d+/2026-[^\" ]+?/", week_page)))
+
+    semaphore = asyncio.Semaphore(8)
+
+    async def fetch_one(url: str) -> dict[str, Any] | None:
+      async with semaphore:
+        try:
+          game_response = await client.get(url)
+          game_response.raise_for_status()
+          return parse_bluechip_game(game_response.text, url)
+        except Exception:
+          return None
+
+    games = [game for game in await asyncio.gather(*(fetch_one(url) for url in urls)) if game]
+    keyed = {matchup_key(game["away_team"], game["home_team"]): game for game in games}
+    BLUECHIP_CACHE.update({"expires_at": now + BLUECHIP_CACHE_SECONDS, "games": keyed})
+    return keyed
 
 
 def load_projections() -> dict[str, dict[str, Any]]:
@@ -158,6 +273,7 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
   limit = int(os.getenv("KALSHI_MARKET_LIMIT", "100"))
   captured_at = now_iso()
   board: list[dict[str, Any]] = []
+  bluechip_games = await fetch_bluechip_games()
   async with httpx.AsyncClient(timeout=25) as client:
     for sport_name, series_ticker in KALSHI_SPREAD_SERIES.items():
       response = await client.get(
@@ -167,6 +283,7 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
       response.raise_for_status()
       for market in response.json().get("markets", []):
         away_team, home_team = extract_matchup(market)
+        bluechip = bluechip_games.get(matchup_key(away_team, home_team)) if sport_name == "NCAAF" else None
         yes_bid = dollars_to_float(market.get("yes_bid_dollars"))
         yes_ask = dollars_to_float(market.get("yes_ask_dollars"))
         no_bid = dollars_to_float(market.get("no_bid_dollars"))
@@ -211,12 +328,13 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
               "status": market.get("status"),
             },
             "model": {
-              "fair_spread": None,
-              "source": None,
-              "updated_at": None,
+              "fair_spread": bluechip.get("model_spread") if bluechip else None,
+              "source": bluechip.get("source") if bluechip else None,
+              "updated_at": bluechip.get("updated_at") if bluechip else None,
             },
+            "bluechip": bluechip,
             "metrics": {
-              "model_market_gap": None,
+              "model_market_gap": bluechip.get("gap") if bluechip else None,
               "line_move": price_move,
               "confidence_score": min(96, 56 + int(fp_to_float(market.get("volume_24h_fp")) > 0) * 12 + int(fp_to_float(market.get("open_interest_fp")) > 0) * 12),
             },
@@ -227,6 +345,7 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
   return sorted(
     board,
     key=lambda row: (
+      row["metrics"]["model_market_gap"] or 0,
       row["contract"]["volume_24h"],
       row["contract"]["open_interest"],
       abs(row["contract"]["price_move"] or 0),

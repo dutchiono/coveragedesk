@@ -4,7 +4,9 @@ React/Vite dashboard plus FastAPI backend for NFL and NCAA spread-market monitor
 
 ## What is included
 
-- Backend spread ingestion from The Odds API
+- Backend spread ingestion from The Odds API when configured
+- Read-only Kalshi football spread contracts as the live fallback
+- Blue Chip Analytics enrichment for NCAAF model line, gap, source URL, and weather
 - NFL and NCAA FBS sport keys
 - Multi-book consensus spread by game
 - SQLite line-history storage
@@ -12,7 +14,7 @@ React/Vite dashboard plus FastAPI backend for NFL and NCAA spread-market monitor
 - Optional backend model projection CSV
 - Model-vs-market gap and reliability score
 - Game-detail view
-- Preview fallback when backend/API key is unavailable
+- Preview fallback only when the backend itself is unavailable
 
 ## Data updates
 
@@ -25,6 +27,8 @@ backend/data/projections.csv
 ```
 
 The backend reads that file and compares it with live sportsbook consensus rows.
+When `ODDS_API_KEY` is not configured, `/api/board` still returns live Kalshi
+football spread contracts and enriches NCAAF rows from Blue Chip Analytics.
 
 Required environment for live odds:
 

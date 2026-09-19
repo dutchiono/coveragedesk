@@ -40,6 +40,28 @@ type BoardRow = {
     open_interest: number
     status: string | null
   }
+  bluechip?: {
+    market_line: string | null
+    model_line: string | null
+    market_team: string | null
+    model_team: string | null
+    market_spread: number | null
+    model_spread: number | null
+    gap: number | null
+    edge_team: string | null
+    summary: string | null
+    weather: {
+      venue: string | null
+      condition: string | null
+      temperature_f: number | null
+      wind_mph: number | null
+      source: string
+      map_url: string | null
+    }
+    source: string
+    url: string
+    updated_at: string | null
+  } | null
   metrics: {
     model_market_gap: number | null
     line_move: number | null
@@ -83,6 +105,14 @@ function formatCents(value: number | null) {
 function formatVolume(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-'
   return value >= 1000 ? value.toLocaleString(undefined, { maximumFractionDigits: 0 }) : value.toFixed(0)
+}
+
+function formatWeather(row: BoardRow) {
+  const weather = row.bluechip?.weather
+  if (!weather?.condition) return '-'
+  const temp = weather.temperature_f === null ? '' : `, ${formatNumber(weather.temperature_f, 0)}F`
+  const wind = weather.wind_mph === null ? '' : `, ${formatNumber(weather.wind_mph, 0)} mph`
+  return `${weather.condition}${temp}${wind}`
 }
 
 function confidenceLabel(score: number) {
@@ -268,9 +298,10 @@ function App() {
                     <th>Contract</th>
                     <th>Yes bid</th>
                     <th>Yes ask</th>
-                    <th>Move</th>
+                    <th>BC model</th>
+                    <th>Gap</th>
+                    <th>Weather</th>
                     <th>24h vol.</th>
-                    <th>Open int.</th>
                     <th>Timestamp</th>
                     <th>Conf.</th>
                   </tr>
@@ -296,9 +327,10 @@ function App() {
                         <td>{consensusLabel(row)}</td>
                         <td>{formatCents(row.contract?.yes_bid ?? null)}</td>
                         <td>{formatCents(row.contract?.yes_ask ?? null)}</td>
-                        <td>{formatNumber(row.metrics.line_move)}</td>
+                        <td>{row.bluechip?.model_line ?? '-'}</td>
+                        <td>{formatNumber(row.bluechip?.gap ?? row.metrics.model_market_gap)}</td>
+                        <td className="weather-cell">{formatWeather(row)}</td>
                         <td>{formatVolume(row.contract?.volume_24h)}</td>
-                        <td>{formatVolume(row.contract?.open_interest)}</td>
                         <td>{formatDate(row.market.latest_timestamp)}</td>
                         <td>
                           <span className={`badge ${confidenceLabel(row.metrics.confidence_score).toLowerCase()}`}>
@@ -309,7 +341,7 @@ function App() {
                     ))
                   ) : (
                     <tr>
-                      <td className="empty" colSpan={9}>
+                      <td className="empty" colSpan={11}>
                         No live markets are available yet. Refresh in a minute.
                       </td>
                     </tr>
@@ -350,6 +382,19 @@ function App() {
                     <span>Activity</span>
                     <strong>{formatVolume(selectedRow.contract?.volume_24h)}</strong>
                     <small>24h volume, {formatVolume(selectedRow.contract?.open_interest)} open interest</small>
+                  </div>
+                  <div>
+                    <span>Blue Chip model</span>
+                    <strong>{selectedRow.bluechip?.model_line ?? '-'}</strong>
+                    <small>
+                      {selectedRow.bluechip?.market_line ?? 'No market line'}; gap{' '}
+                      {formatNumber(selectedRow.bluechip?.gap ?? selectedRow.metrics.model_market_gap)}
+                    </small>
+                  </div>
+                  <div>
+                    <span>Weather</span>
+                    <strong>{selectedRow.bluechip?.weather.condition ?? '-'}</strong>
+                    <small>{formatWeather(selectedRow)}</small>
                   </div>
                   <div>
                     <span>Reliability</span>

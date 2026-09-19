@@ -324,7 +324,7 @@ button {
 
 table {
   width: 100%;
-  min-width: 980px;
+  min-width: 1180px;
   border-collapse: collapse;
   font-size: 0.92rem;
 }
@@ -360,6 +360,11 @@ th {
 
 .muted {
   color: #6c706d;
+}
+
+.weather-cell {
+  max-width: 220px;
+  color: #555b58;
 }
 
 .probability {
