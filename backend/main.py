@@ -133,6 +133,43 @@ def signed_line(team: str | None, spread: float | None) -> str | None:
   return f"{team} {spread:+.1f}".replace("+", "")
 
 
+def opponent_team(away_team: str, home_team: str, team: str | None) -> str | None:
+  if not team:
+    return None
+  key = team_key(team)
+  if key == team_key(away_team):
+    return home_team
+  if key == team_key(home_team):
+    return away_team
+  return None
+
+
+def contract_side_team(market: dict[str, Any]) -> str | None:
+  label = market.get("yes_sub_title") or market.get("title") or ""
+  match = re.match(r"(.+?) wins\b", label.replace("?", ""), re.I)
+  return clean_text(match.group(1)) if match else None
+
+
+def contract_model_gap(bet_type: str, market: dict[str, Any], bluechip: dict[str, Any] | None, impact: dict[str, Any] | None) -> float | None:
+  threshold = dollars_to_float(market.get("floor_strike"))
+  if threshold is None:
+    return None
+  if bet_type == "spread" and bluechip:
+    model_spread = bluechip.get("model_spread")
+    model_team = bluechip.get("model_team")
+    side_team = contract_side_team(market)
+    if model_spread is None or not model_team or not side_team:
+      return bluechip.get("gap")
+    model_margin = abs(float(model_spread))
+    side_margin = model_margin if team_key(side_team) == team_key(model_team) else -model_margin
+    return round(side_margin - threshold, 1)
+  if bet_type == "total" and impact and impact.get("adjusted_total") is not None:
+    adjusted_total = float(impact["adjusted_total"])
+    label = f"{market.get('yes_sub_title') or ''} {market.get('title') or ''}".lower()
+    return round(threshold - adjusted_total, 1) if "under" in label else round(adjusted_total - threshold, 1)
+  return None
+
+
 def inferred_precipitation(condition: str | None) -> tuple[float, float]:
   text = (condition or "").lower()
   rain_pct = 0.0
@@ -216,6 +253,18 @@ def weather_impact(bluechip: dict[str, Any] | None, baseline_total: float | None
   }
 
 
+def gap_confidence(model_gap: float | None) -> int:
+  if model_gap is None:
+    return 46
+  if model_gap >= 4:
+    return 88
+  if model_gap >= 2.5:
+    return 76
+  if model_gap >= 1:
+    return 64
+  return 52
+
+
 def parse_bluechip_game(page: str, url: str) -> dict[str, Any] | None:
   title_match = re.search(r"<title>(.*?)\s+Prediction,", page, re.I | re.S)
   if not title_match:
@@ -243,6 +292,28 @@ def parse_bluechip_game(page: str, url: str) -> dict[str, Any] | None:
   model_team = clean_text(line_match.group("model_team")) if line_match else None
   market_spread = float(line_match.group("market_spread")) if line_match else None
   model_spread = float(line_match.group("model_spread")) if line_match else None
+  desc_text = clean_text(desc_match.group(1)) if desc_match else None
+
+  if desc_text and (market_spread is None or model_spread is None):
+    fallback = re.search(
+      r"line (?P<market_team>.+?) (?P<market_spread>[+-]?\d+(?:\.\d+)?)\.\s+Power ratings favor (?P<model_team>.+?) by (?P<model_margin>\d+(?:\.\d+)?)",
+      desc_text,
+      re.I,
+    )
+    if fallback:
+      market_team = clean_text(fallback.group("market_team"))
+      market_spread = float(fallback.group("market_spread"))
+      model_team = clean_text(fallback.group("model_team"))
+      model_margin = float(fallback.group("model_margin"))
+      market_opponent = opponent_team(away_team, home_team, market_team)
+      model_spread = -model_margin if model_team == market_team else model_margin
+      if market_spread and market_team and market_opponent and market_spread > 0:
+        market_team = market_opponent
+        market_spread = -market_spread
+
+  gap = float(line_match.group("gap")) if line_match else None
+  if gap is None and market_spread is not None and model_spread is not None:
+    gap = round(abs(model_spread - market_spread), 1)
 
   return {
     "away_team": away_team,
@@ -253,9 +324,9 @@ def parse_bluechip_game(page: str, url: str) -> dict[str, Any] | None:
     "model_team": model_team,
     "market_spread": market_spread,
     "model_spread": model_spread,
-    "gap": float(line_match.group("gap")) if line_match else None,
+    "gap": gap,
     "edge_team": clean_text(line_match.group("edge_team")) if line_match else None,
-    "summary": clean_text(desc_match.group(1)) if desc_match else None,
+    "summary": desc_text,
     "weather": {
       "venue": clean_text(weather_match.group("venue")) if weather_match else None,
       "condition": clean_text(weather_match.group("condition")) if weather_match else None,
@@ -405,11 +476,13 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
         if last_price is not None and previous_price is not None and previous_price > 0:
           price_move = round((last_price - previous_price) * 100, 1)
         cover_price = yes_bid if yes_bid is not None else last_price
-        model_gap = bluechip.get("gap") if bluechip and bet_type == "spread" else None
         baseline_total = dollars_to_float(market.get("floor_strike")) if bet_type == "total" else None
         impact = weather_impact(bluechip, baseline_total)
+        model_gap = contract_model_gap(bet_type, market, bluechip, impact)
         weather_score = impact.get("score", 0) if impact else 0
-        edge_score = round((model_gap or 0) * 10 + (cover_price or 0) * 100 + fp_to_float(market.get("volume_24h_fp")) / 1000 + weather_score / 5, 2)
+        positive_gap = max(model_gap or 0, 0)
+        price_score = (1 - (cover_price or 0.5)) * 20 if positive_gap else 0
+        edge_score = round(positive_gap * 20 + price_score + weather_score / 10, 2)
 
         board.append(
           {
@@ -456,7 +529,7 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
             "metrics": {
               "model_market_gap": model_gap,
               "line_move": price_move,
-              "confidence_score": min(96, 56 + int(fp_to_float(market.get("volume_24h_fp")) > 0) * 12 + int(fp_to_float(market.get("open_interest_fp")) > 0) * 12),
+              "confidence_score": gap_confidence(model_gap),
             },
             "updated_at": market.get("updated_time") or captured_at,
           }
@@ -467,8 +540,6 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
     key=lambda row: (
       row["edge_score"],
       row["metrics"]["model_market_gap"] or 0,
-      row["contract"]["volume_24h"],
-      row["contract"]["open_interest"],
       abs(row["contract"]["price_move"] or 0),
     ),
     reverse=True,

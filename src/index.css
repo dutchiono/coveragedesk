@@ -404,7 +404,7 @@ th {
 .line-copy,
 .row-game,
 .row-market,
-.row-weather {
+.row-odds {
   display: block;
   min-width: 0;
 }
@@ -412,8 +412,8 @@ th {
 .breakdown-row small,
 .line-copy,
 .row-market strong,
-.row-weather strong,
-.row-weather small {
+.row-odds strong,
+.row-odds small {
   overflow: hidden;
   color: #656b68;
   text-overflow: ellipsis;
@@ -421,12 +421,12 @@ th {
 }
 
 .row-market strong,
-.row-weather strong {
+.row-odds strong {
   color: #1b1e23;
 }
 
 .row-market small,
-.row-weather small {
+.row-odds small {
   display: block;
   margin-top: 4px;
 }
@@ -776,13 +776,13 @@ pre {
   .row-game,
   .row-market,
   .row-signals,
-  .row-weather,
+  .row-odds,
   .breakdown-row .line-copy {
     grid-column: 2;
   }
 
   .row-market,
-  .row-weather {
+  .row-odds {
     display: grid;
     gap: 3px;
     padding-top: 2px;
@@ -793,8 +793,8 @@ pre {
   }
 
   .row-market strong,
-  .row-weather strong,
-  .row-weather small,
+  .row-odds strong,
+  .row-odds small,
   .breakdown-row small,
   .line-copy {
     white-space: normal;

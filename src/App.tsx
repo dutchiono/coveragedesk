@@ -130,9 +130,12 @@ function formatSigned(value: number | null, digits = 1) {
   return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`
 }
 
-function formatVolume(value: number | null | undefined) {
-  if (value === null || value === undefined || !Number.isFinite(value)) return '-'
-  return value >= 1000 ? value.toLocaleString(undefined, { maximumFractionDigits: 0 }) : value.toFixed(0)
+function coverOdds(row: BoardRow) {
+  return row.contract?.last_price ?? row.contract?.yes_bid ?? row.contract?.yes_ask ?? null
+}
+
+function modelGap(row: BoardRow) {
+  return row.bluechip?.gap ?? row.metrics.model_market_gap ?? null
 }
 
 function formatWeather(row: BoardRow) {
@@ -145,9 +148,9 @@ function formatWeather(row: BoardRow) {
 
 function formatWeatherImpact(row: BoardRow) {
   const impact = row.weather_impact
-  if (!impact) return 'Weather model -'
-  const total = impact.adjusted_total === null ? `total ${formatNumber(impact.total_adjustment)}` : `total ${formatNumber(impact.adjusted_total)}`
-  return `${impact.category} ${formatNumber(impact.score, 0)}/100, ${total}, conf ${formatNumber(impact.confidence, 0)}`
+  if (!impact || Math.abs(impact.total_adjustment) < 0.1) return null
+  const total = impact.adjusted_total === null ? 'total lean' : `adjusted total ${formatNumber(impact.adjusted_total)}`
+  return `Weather ${total} (${formatSigned(impact.total_adjustment)} pts)`
 }
 
 function marketTypeLabel(row: BoardRow) {
@@ -155,9 +158,8 @@ function marketTypeLabel(row: BoardRow) {
 }
 
 function breakdownLine(row: BoardRow) {
-  const price = `${formatCents(row.contract?.yes_bid ?? null)} / ${formatCents(row.contract?.yes_ask ?? null)}`
-  const model = row.bluechip?.model_line ? `BC ${row.bluechip.model_line}, gap ${formatNumber(row.bluechip.gap)}` : 'No BC model'
-  return `${marketTypeLabel(row)}: ${consensusLabel(row)} | ${price} | ${model}`
+  const model = row.bluechip?.model_line ? `Model ${row.bluechip.model_line}; gap ${formatSigned(modelGap(row))}` : 'Model gap unavailable'
+  return `${marketTypeLabel(row)}: ${consensusLabel(row)} | odds ${formatCents(coverOdds(row))} | ${model}`
 }
 
 function confidenceLabel(score: number) {
@@ -240,15 +242,16 @@ function App() {
       if (sortMode === 'move') {
         return Math.abs(b.metrics.line_move ?? 0) - Math.abs(a.metrics.line_move ?? 0)
       }
-      if (sortMode === 'volume') return (b.contract?.volume_24h ?? 0) - (a.contract?.volume_24h ?? 0)
-      if (sortMode === 'interest') return (b.contract?.open_interest ?? 0) - (a.contract?.open_interest ?? 0)
-      if (sortMode === 'books') return b.market.book_count - a.market.book_count
-      return Math.abs(b.metrics.model_market_gap ?? 0) - Math.abs(a.metrics.model_market_gap ?? 0)
+      return Math.abs(modelGap(b) ?? 0) - Math.abs(modelGap(a) ?? 0)
     })
   }, [board.rows, selectedSport, sortMode, teamSearch])
 
   const selectedRow = rows.find((row) => row.game_id === selectedGameId) ?? rows[0] ?? null
-  const topEdge = rows[0]?.edge_score ?? null
+  const topGap = rows.reduce<number | null>((largest, row) => {
+    const gap = modelGap(row)
+    if (gap === null || !Number.isFinite(gap) || gap <= 0) return largest
+    return largest === null || gap > largest ? gap : largest
+  }, null)
   const latestUpdate = rows.reduce<string | null>((latest, row) => {
     if (!latest) return row.updated_at
     return new Date(row.updated_at) > new Date(latest) ? row.updated_at : latest
@@ -295,12 +298,9 @@ function App() {
         <label className="field">
           <span>Rank by</span>
           <select value={sortMode} onChange={(event) => setSortMode(event.target.value)}>
-            <option value="cover">Best cover odds</option>
+            <option value="cover">Best gap / odds</option>
             <option value="gap">Model gap</option>
             <option value="move">Price move</option>
-            <option value="volume">24h volume</option>
-            <option value="interest">Open interest</option>
-            <option value="books">Book count</option>
           </select>
         </label>
 
@@ -330,8 +330,8 @@ function App() {
             <strong>{rows.length.toLocaleString()}</strong>
           </div>
           <div>
-            <span>Top edge</span>
-            <strong>{formatNumber(topEdge)}</strong>
+            <span>Top gap</span>
+            <strong>{formatSigned(topGap)}</strong>
           </div>
           <div>
             <span>Last update</span>
@@ -353,8 +353,12 @@ function App() {
                   {selectedRow.away_team} vs {selectedRow.home_team}
                   <br />
                   {breakdownLine(selectedRow)}
-                  <br />
-                  {formatWeather(selectedRow)} / {formatWeatherImpact(selectedRow)}
+                  {formatWeatherImpact(selectedRow) ? (
+                    <>
+                      <br />
+                      {formatWeather(selectedRow)} / {formatWeatherImpact(selectedRow)}
+                    </>
+                  ) : null}
                 </p>
                 <div className="line-chart" aria-label="Opening to current line">
                   <span>Prev {formatCents(selectedRow.contract?.previous_price ?? selectedRow.market.opening_spread)}</span>
@@ -364,33 +368,24 @@ function App() {
               </div>
               <div className="detail-stack">
                 <div>
-                  <span>Bid / ask</span>
-                  <strong>
-                    {formatCents(selectedRow.contract?.yes_bid ?? null)} / {formatCents(selectedRow.contract?.yes_ask ?? null)}
-                  </strong>
-                  <small>{selectedRow.market.latest_book ?? '-'}; {formatDate(selectedRow.market.latest_timestamp)}</small>
+                  <span>Odds</span>
+                  <strong>{formatCents(coverOdds(selectedRow))}</strong>
+                  <small>Current price for this line; move {formatSigned(selectedRow.metrics.line_move)}</small>
                 </div>
                 <div>
-                  <span>Blue Chip model</span>
-                  <strong>{selectedRow.bluechip?.model_line ?? '-'}</strong>
+                  <span>Model gap</span>
+                  <strong>{formatSigned(modelGap(selectedRow))}</strong>
                   <small>
-                    {selectedRow.bluechip?.market_line ?? 'No market line'}; gap{' '}
-                    {formatNumber(selectedRow.bluechip?.gap ?? selectedRow.metrics.model_market_gap)}
+                    {selectedRow.bluechip?.model_line ?? 'Model unavailable'} vs {selectedRow.bluechip?.market_line ?? consensusLabel(selectedRow)}
                   </small>
                 </div>
-                <div>
-                  <span>Weather impact</span>
-                  <strong>{selectedRow.weather_impact ? `${selectedRow.weather_impact.category} ${formatNumber(selectedRow.weather_impact.score, 0)}/100` : '-'}</strong>
-                  <small>
-                    Total {formatNumber(selectedRow.weather_impact?.total_adjustment ?? null)}; confidence{' '}
-                    {formatNumber(selectedRow.weather_impact?.confidence ?? null, 0)}
-                  </small>
-                </div>
-                <div>
-                  <span>Activity</span>
-                  <strong>{formatVolume(selectedRow.contract?.volume_24h)}</strong>
-                  <small>24h volume, {formatVolume(selectedRow.contract?.open_interest)} open interest</small>
-                </div>
+                {formatWeatherImpact(selectedRow) ? (
+                  <div>
+                    <span>Weather adjustment</span>
+                    <strong>{formatSigned(selectedRow.weather_impact?.total_adjustment ?? null)} pts</strong>
+                    <small>{formatWeather(selectedRow)}</small>
+                  </div>
+                ) : null}
               </div>
             </>
           ) : (
@@ -409,9 +404,9 @@ function App() {
           <div className="breakdown-header" aria-hidden="true">
             <span>#</span>
             <span>Game</span>
-            <span>Market</span>
+            <span>Line</span>
             <span>Gap / confidence</span>
-            <span>Weather</span>
+            <span>Odds</span>
           </div>
 
           <div className="breakdown-list">
@@ -433,25 +428,23 @@ function App() {
                     </small>
                   </span>
                   <span className="row-market">
-                    <span className="mobile-label">Market</span>
+                    <span className="mobile-label">Line</span>
                     <strong>{consensusLabel(row)}</strong>
-                    <small>
-                      Bid/ask {formatCents(row.contract?.yes_bid ?? null)} / {formatCents(row.contract?.yes_ask ?? null)}
-                    </small>
+                    <small>{row.bluechip?.model_line ? `Model ${row.bluechip.model_line}` : 'Model gap unavailable'}</small>
                   </span>
                   <span className="row-signals">
                     <span>
                       <b>Gap</b>
-                      <strong>{formatSigned(row.bluechip?.gap ?? row.metrics.model_market_gap)}</strong>
+                      <strong>{formatSigned(modelGap(row))}</strong>
                     </span>
                     <span className={`confidence ${confidenceClass(row.metrics.confidence_score)}`}>
                       {confidenceLabel(row.metrics.confidence_score)}
                     </span>
                   </span>
-                  <span className="row-weather">
-                    <span className="mobile-label">Weather</span>
-                    <strong>{formatWeatherImpact(row)}</strong>
-                    <small>{formatWeather(row)} / vol {formatVolume(row.contract?.volume_24h)}</small>
+                  <span className="row-odds">
+                    <span className="mobile-label">Odds</span>
+                    <strong>{formatCents(coverOdds(row))}</strong>
+                    <small>Move {formatSigned(row.metrics.line_move)}</small>
                   </span>
                 </button>
               ))
