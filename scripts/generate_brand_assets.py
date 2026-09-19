@@ -71,18 +71,14 @@ def create_banner():
     
     # Title Text
     title_x = box_x + box_size + 50
-    title_y = box_y + 15
-    title_font = get_font(76, bold=True)
+    title_y = box_y + 35
+    title_font = get_font(78, bold=True)
     draw.text((title_x, title_y), "COVERAGEDESK", fill=COLOR_WHITE, font=title_font)
     
     # Subtitle
-    sub_y = title_y + 90
+    sub_y = title_y + 85
     sub_font = get_font(32, bold=True)
     draw.text((title_x, sub_y), "AGENTIC SPORTS SPREAD PROTOCOL", fill=COLOR_LIME, font=sub_font)
-
-    # Ticker tag right
-    ticker_font = get_font(28, bold=True)
-    draw.text((title_x, sub_y + 45), "$CVR  •  BUYBACK & BURN  •  HOLDER DIVIDENDS", fill=COLOR_MUTED, font=ticker_font)
 
     output_path = os.path.join("public", "banner.png")
     img.save(output_path, "PNG")

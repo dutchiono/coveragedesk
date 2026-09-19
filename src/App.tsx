@@ -1,45 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 
 type SportLabel = 'ALL' | 'NFL' | 'NCAAF'
-type TabName = 'board' | 'bets'
-type SortDirection = 'asc' | 'desc'
-type SortKey = 'edge' | 'game' | 'date' | 'line' | 'gap' | 'rating' | 'weather' | 'odds'
+type TabName = 'board' | 'agent' | 'tokenomics' | 'steering'
 const REFRESH_MS = 5 * 60 * 1000
-
-type RatingInfo = {
-  grade: string
-  edge: number
-  summary: string
-  explanation: string
-  gap_points: number
-  price_edge_cents: number
-}
-
-type AgentThought = {
-  id: number
-  thought: string
-  confidence: number
-  edge: number
-  bet_placed: number
-  created_at: string
-}
-
-type SteeringInfo = {
-  holder_address: string
-  burned_tokens: number
-  underdog_bias: number
-  ncaaf_weight: number
-  nfl_weight: number
-  min_edge_threshold: number
-  custom_directive: string
-  created_at: string
-}
 
 type BoardRow = {
   game_id: string
   data_source?: 'sportsbook' | 'kalshi'
   sport: 'NFL' | 'NCAAF'
-  bet_type?: 'spread' | 'total' | 'moneyline'
+  bet_type?: 'spread' | 'total'
   edge_score?: number
   commence_time: string
   away_team: string
@@ -82,11 +51,16 @@ type BoardRow = {
     market_spread: number | null
     model_spread: number | null
     gap: number | null
-    weather?: {
-      condition?: string | null
-      temperature_f?: number | null
-      wind_mph?: number | null
-    } | null
+    edge_team: string | null
+    summary: string | null
+    weather: {
+      venue: string | null
+      condition: string | null
+      temperature_f: number | null
+      wind_mph: number | null
+      source: string
+      map_url: string | null
+    }
     source: string
     url: string
     updated_at: string | null
@@ -101,17 +75,42 @@ type BoardRow = {
     total_adjustment: number
     adjusted_total: number | null
     adjusted_spread: number | null
+    projected_score: {
+      team_a_points: number
+      team_b_points: number
+    } | null
     confidence: number
+    assumptions: {
+      rain_pct: number
+      snow_in: number
+      gust_mph: number
+    }
   } | null
-  rating?: RatingInfo
   metrics: {
     model_market_gap: number | null
     line_move: number | null
     confidence_score: number
   }
-  steering?: SteeringInfo | null
-  agent_thoughts?: AgentThought[]
   updated_at: string
+}
+
+type BoardResponse = {
+  generated_at: string
+  source: 'sportsbook' | 'kalshi' | 'live' | 'preview'
+  status: string
+  rows: BoardRow[]
+}
+
+type AgentThought = {
+  id: number
+  game_id: string
+  matchup: string
+  thought: string
+  confidence: number
+  edge: number
+  bet_placed: number
+  steering_influences: string
+  created_at: string
 }
 
 type AgentBet = {
@@ -152,27 +151,54 @@ type Holder = {
   updated_at: string
 }
 
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    })
-  } catch {
-    return iso
-  }
+type SteeringStatus = {
+  holder_address?: string
+  burned_tokens: number
+  underdog_bias: number
+  ncaaf_weight: number
+  nfl_weight: number
+  min_edge_threshold: number
+  custom_directive: string
+  created_at: string
 }
 
-function formatSigned(value: number | null | undefined, decimals = 1): string {
+const emptyBoard: BoardResponse = {
+  generated_at: new Date().toISOString(),
+  source: 'preview',
+  status: 'Loading market board',
+  rows: [],
+}
+
+function formatDate(value: string | null | undefined): string {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+}
+
+function formatNumber(value: number | null | undefined, digits = 1): string {
+  return value === null || value === undefined || !Number.isFinite(value) ? '-' : value.toFixed(digits)
+}
+
+function formatSigned(value: number | null | undefined, digits = 1): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-'
-  return `${value > 0 ? '+' : ''}${value.toFixed(decimals)}`
+  return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`
 }
 
-function formatCurrency(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '0 $CVR'
-  return `${value.toLocaleString('en-US', { maximumFractionDigits: 0 })} $CVR`
+function formatCoverage(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '-'
+  return `${value.toLocaleString('en-US', { maximumFractionDigits: 0 })} COVERAGE`
+}
+
+function formatPercent(value: number | null | undefined, digits = 0): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '-'
+  const percent = value <= 1 ? value * 100 : value
+  return `${percent.toFixed(digits)}%`
 }
 
 function formatCents(value: number | null | undefined): string {
@@ -180,266 +206,230 @@ function formatCents(value: number | null | undefined): string {
   return `${Math.round(value * 100)}c`
 }
 
+function modelGap(row: BoardRow): number | null {
+  return row.bluechip?.gap ?? row.metrics.model_market_gap ?? null
+}
+
+function coverPrice(row: BoardRow): number | null {
+  return row.contract?.last_price ?? row.contract?.yes_bid ?? row.contract?.yes_ask ?? null
+}
+
 function marketTypeLabel(row: BoardRow): string {
-  if (row.bet_type === 'total') return 'Total'
-  if (row.bet_type === 'moneyline') return 'Moneyline'
-  return 'Spread'
+  return row.bet_type === 'total' ? 'Total' : 'Spread'
 }
 
 function consensusLabel(row: BoardRow): string {
-  if (row.contract?.side_label) return row.contract.side_label
-  if (row.bluechip?.market_team && row.bluechip.market_line) {
-    return `${row.bluechip.market_team} ${row.bluechip.market_line}`
+  if (row.data_source === 'kalshi' && row.contract) {
+    const strike = row.market.consensus_spread
+    const suffix = strike === null ? '' : ` > ${formatNumber(strike)}`
+    return `${row.contract.side_label ?? row.contract.title}${suffix}`
   }
-  if (row.market.consensus_spread !== null && row.market.consensus_spread !== undefined) {
-    const side = row.market.consensus_spread <= 0 ? row.home_team : row.away_team
-    return `${side} ${formatSigned(row.market.consensus_spread)}`
-  }
-  return `${row.away_team} vs ${row.home_team}`
+  const spread = row.market.consensus_spread
+  if (spread === null) return '-'
+  if (spread < 0) return `${row.home_team} ${spread.toFixed(1)}`
+  if (spread > 0) return `${row.away_team} ${(-spread).toFixed(1)}`
+  return 'Pick'
 }
 
-function modelGap(row: BoardRow): number | null {
-  if (row.metrics.model_market_gap !== null && row.metrics.model_market_gap !== undefined) {
-    return row.metrics.model_market_gap
+function weatherLabel(row: BoardRow): string {
+  const impact = row.weather_impact
+  const condition = row.bluechip?.weather?.condition
+  if (!impact) return condition ?? '-'
+  if (Math.abs(impact.total_adjustment) < 0.1) return condition ?? impact.category
+  return `${condition ?? impact.category} ${formatSigned(impact.total_adjustment)} total`
+}
+
+function edgeGrade(row: BoardRow): 'prime' | 'strong' | 'lean' | 'watch' {
+  const gap = Math.abs(modelGap(row) ?? 0)
+  if (gap >= 4) return 'prime'
+  if (gap >= 2.5) return 'strong'
+  if (gap >= 1) return 'lean'
+  return 'watch'
+}
+
+function edgeGradeLabel(row: BoardRow): string {
+  const grade = edgeGrade(row)
+  if (grade === 'prime') return 'Prime'
+  if (grade === 'strong') return 'Strong'
+  if (grade === 'lean') return 'Lean'
+  return 'Watch'
+}
+
+function normalize(value: string): string {
+  return value.toLowerCase().replace(/\bst[.]?\b/g, 'state').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+function rowMatches(row: BoardRow, query: string): boolean {
+  const normalized = normalize(query)
+  if (!normalized) return true
+  const haystack = `${normalize(row.away_team)} ${normalize(row.home_team)} ${normalize(row.contract?.title ?? '')}`
+  return normalized.split(' ').filter(Boolean).every((token) => haystack.includes(token))
+}
+
+function compactAddress(address: string): string {
+  if (address.length <= 18) return address
+  return `${address.slice(0, 8)}...${address.slice(-6)}`
+}
+
+async function fetchBoard(): Promise<BoardResponse> {
+  try {
+    const response = await fetch('/api/board', { cache: 'no-store' })
+    if (!response.ok) throw new Error('Board API unavailable')
+    return (await response.json()) as BoardResponse
+  } catch {
+    const response = await fetch('/data/board-preview.json', { cache: 'no-store' })
+    if (!response.ok) return emptyBoard
+    return { ...((await response.json()) as BoardResponse), source: 'preview' }
   }
-  if (row.bluechip?.gap !== null && row.bluechip?.gap !== undefined) {
-    return row.bluechip.gap
-  }
-  return null
-}
-
-function coverOdds(row: BoardRow): number | null {
-  if (row.contract?.yes_bid !== null && row.contract?.yes_bid !== undefined) {
-    return row.contract.yes_bid
-  }
-  if (row.contract?.last_price !== null && row.contract?.last_price !== undefined) {
-    return row.contract.last_price
-  }
-  return null
-}
-
-function ratingGrade(row: BoardRow): string {
-  return row.rating?.grade ?? 'Even'
-}
-
-function ratingPercent(row: BoardRow): string {
-  const prob = row.contract?.yes_bid ? row.contract.yes_bid / 100.0 : 0.5
-  const est = Math.min(0.98, Math.max(0.02, prob + (row.rating?.edge ?? 0)))
-  return `${(est * 100).toFixed(1)}%`
-}
-
-function ratingClass(row: BoardRow): string {
-  const grade = ratingGrade(row).toLowerCase()
-  if (grade.includes('strong buy') || grade.includes('excellent')) return 'excellent'
-  if (grade.includes('buy') || grade.includes('great')) return 'great'
-  if (grade.includes('good')) return 'good'
-  if (grade.includes('avoid')) return 'avoid'
-  return 'even'
-}
-
-function weatherColumnLabel(row: BoardRow): string {
-  if (row.weather_impact && row.weather_impact.total_adjustment) {
-    return `Impact ${formatSigned(row.weather_impact.total_adjustment)} pts`
-  }
-  if (row.bluechip?.weather?.condition) return row.bluechip.weather.condition
-  return 'Clear'
-}
-
-function compareNumber(a: number | null | undefined, b: number | null | undefined, direction: SortDirection): number {
-  const numA = a === null || a === undefined || !Number.isFinite(a) ? (direction === 'asc' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY) : a
-  const numB = b === null || b === undefined || !Number.isFinite(b) ? (direction === 'asc' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY) : b
-  if (numA === numB) return 0
-  return direction === 'asc' ? numA - numB : numB - numA
 }
 
 export function App() {
   const [activeTab, setActiveTab] = useState<TabName>('board')
-  const [rows, setRows] = useState<BoardRow[]>([])
-  const [source, setSource] = useState('live')
+  const [board, setBoard] = useState<BoardResponse>(emptyBoard)
   const [selectedSport, setSelectedSport] = useState<SportLabel>('ALL')
   const [teamSearch, setTeamSearch] = useState('')
-  const [selectedGameId, setSelectedGameId] = useState<string | null>(null)
-  const [expandedRatingId, setExpandedRatingId] = useState<string | null>(null)
-  const [sortKey, setSortKey] = useState<SortKey>('gap')
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  const [selectedGameId, setSelectedGameId] = useState<string>('')
   const [refreshing, setRefreshing] = useState(false)
 
-  // Tokenomics & Bets State
-  const [tokenStats, setTokenStats] = useState<TokenStats | null>(null)
+  const [agentThoughts, setAgentThoughts] = useState<AgentThought[]>([])
   const [agentBets, setAgentBets] = useState<AgentBet[]>([])
+  const [tokenStats, setTokenStats] = useState<TokenStats | null>(null)
   const [holders, setHolders] = useState<Holder[]>([])
-  const [userAddress, setUserAddress] = useState('5vRt8...SteeringHolder')
+  const [steeringStatus, setSteeringStatus] = useState<SteeringStatus | null>(null)
+  const [tickMessage, setTickMessage] = useState<string | null>(null)
+  const [isTicking, setIsTicking] = useState(false)
 
-  // Modals State
-  const [isTokenModalOpen, setIsTokenModalOpen] = useState(false)
-  const [steeringTargetGame, setSteeringTargetGame] = useState<BoardRow | null>(null)
-
-  // Game Steering Form State
-  const [steerBurnTokens, setSteerBurnTokens] = useState(50000)
-  const [steerBias, setSteerBias] = useState(1.3)
-  const [steerDirective, setSteerDirective] = useState('Heavy underdog spread gap advantage.')
+  const [steerAddress, setSteerAddress] = useState('5vRt8...SteeringHolder')
+  const [steerBurnTokens, setSteerBurnTokens] = useState(250000)
+  const [steerUnderdogBias, setSteerUnderdogBias] = useState(1.25)
+  const [steerNcaafWeight, setSteerNcaafWeight] = useState(1.2)
+  const [steerNflWeight, setSteerNflWeight] = useState(1)
+  const [steerMinEdge, setSteerMinEdge] = useState(1.5)
+  const [steerDirective, setSteerDirective] = useState('Prioritize bad weather college football underdogs with high line movement.')
   const [steerMessage, setSteerMessage] = useState<string | null>(null)
 
-  async function loadData() {
-    setRefreshing(true)
+  async function loadData(showRefreshing = true) {
+    if (showRefreshing) setRefreshing(true)
     try {
-      const [boardRes, betsRes, statsRes, holdersRes] = await Promise.all([
-        fetch('/api/board').then((r) => r.json()),
-        fetch('/api/agent/bets').then((r) => r.json()).catch(() => ({ bets: [] })),
-        fetch('/api/agent/token-stats').then((r) => r.json()).catch(() => null),
-        fetch('/api/agent/holders').then((r) => r.json()).catch(() => ({ holders: [] })),
+      const [boardRes, thoughtsRes, betsRes, statsRes, holdersRes, steerRes] = await Promise.all([
+        fetchBoard(),
+        fetch('/api/agent/thoughts').then((response) => response.json()).catch(() => ({ thoughts: [] })),
+        fetch('/api/agent/bets').then((response) => response.json()).catch(() => ({ bets: [] })),
+        fetch('/api/agent/token-stats').then((response) => response.json()).catch(() => null),
+        fetch('/api/agent/holders').then((response) => response.json()).catch(() => ({ holders: [] })),
+        fetch('/api/agent/steering-status').then((response) => response.json()).catch(() => null),
       ])
 
-      if (boardRes && Array.isArray(boardRes.rows)) {
-        setRows(boardRes.rows)
-        setSource(boardRes.source)
-      }
+      if (boardRes && Array.isArray(boardRes.rows)) setBoard(boardRes)
+      if (thoughtsRes && Array.isArray(thoughtsRes.thoughts)) setAgentThoughts(thoughtsRes.thoughts)
       if (betsRes && Array.isArray(betsRes.bets)) setAgentBets(betsRes.bets)
       if (statsRes) setTokenStats(statsRes)
       if (holdersRes && Array.isArray(holdersRes.holders)) setHolders(holdersRes.holders)
-    } catch (err) {
-      console.error('Failed to load CoverageDesk data', err)
+      if (steerRes) setSteeringStatus(steerRes)
     } finally {
-      setRefreshing(false)
+      if (showRefreshing) setRefreshing(false)
     }
   }
 
   useEffect(() => {
-    loadData()
-    const timer = setInterval(loadData, REFRESH_MS)
-    return () => clearInterval(timer)
+    void loadData()
+    const timer = window.setInterval(() => {
+      void loadData(false)
+    }, REFRESH_MS)
+    return () => window.clearInterval(timer)
   }, [])
 
-  async function handleGameSteerSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!steeringTargetGame) return
-    setSteerMessage('Burning $CVR to weight this line...')
+  async function triggerAgentTick() {
+    setIsTicking(true)
+    setTickMessage('Running market evaluation cycle...')
     try {
-      const res = await fetch('/api/agent/steer-game', {
+      const response = await fetch('/api/agent/tick', { method: 'POST' }).then((r) => r.json())
+      if (response.ok) {
+        setTickMessage(
+          `Cycle complete: ${response.processed_thoughts} reads, ${response.placed_bets} wagers, ${formatCoverage(response.buyback_burned_tokens)} burned.`,
+        )
+        await loadData()
+      } else {
+        setTickMessage('Agent cycle failed.')
+      }
+    } catch {
+      setTickMessage('Agent cycle could not reach the backend.')
+    } finally {
+      setIsTicking(false)
+    }
+  }
+
+  async function handleSteerSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSteerMessage('Submitting steering burn...')
+    try {
+      const response = await fetch('/api/agent/steer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          game_id: steeringTargetGame.game_id,
-          holder_address: userAddress,
+          holder_address: steerAddress,
           burned_tokens: steerBurnTokens,
-          underdog_bias: steerBias,
-          ncaaf_weight: 1.2,
-          nfl_weight: 1.0,
-          min_edge_threshold: 1.5,
+          underdog_bias: steerUnderdogBias,
+          ncaaf_weight: steerNcaafWeight,
+          nfl_weight: steerNflWeight,
+          min_edge_threshold: steerMinEdge,
           custom_directive: steerDirective,
         }),
       }).then((r) => r.json())
 
-      if (res.ok) {
-        setSteerMessage(`🔥 Successfully burned ${steerBurnTokens.toLocaleString()} $CVR to weight ${steeringTargetGame.away_team} vs ${steeringTargetGame.home_team}!`)
+      if (response.ok) {
+        setSteerMessage(`Burn accepted: ${formatCoverage(steerBurnTokens)} committed to strategy weights.`)
         await loadData()
-        setTimeout(() => setSteeringTargetGame(null), 1800)
       } else {
-        setSteerMessage(`Steering failed: ${res.detail || 'Must hold ≥ 0.5% $CVR supply.'}`)
+        setSteerMessage(`Steering rejected: ${response.detail || 'holder is not qualified.'}`)
       }
     } catch {
-      setSteerMessage('Failed to reach steering server.')
+      setSteerMessage('Steering endpoint unavailable.')
     }
   }
 
-  function toggleSort(nextKey: SortKey) {
-    if (nextKey === sortKey) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
-      return
-    }
-    setSortKey(nextKey)
-    setSortDirection(nextKey === 'game' || nextKey === 'date' || nextKey === 'line' ? 'asc' : 'desc')
-  }
+  const rows = useMemo(() => {
+    return board.rows
+      .filter((row) => selectedSport === 'ALL' || row.sport === selectedSport)
+      .filter((row) => rowMatches(row, teamSearch))
+      .sort((a, b) => {
+        const aEdge = a.edge_score ?? Math.abs(modelGap(a) ?? 0) * 20
+        const bEdge = b.edge_score ?? Math.abs(modelGap(b) ?? 0) * 20
+        return bEdge - aEdge || Math.abs(modelGap(b) ?? 0) - Math.abs(modelGap(a) ?? 0)
+      })
+  }, [board.rows, selectedSport, teamSearch])
 
-  function sortLabel(key: SortKey) {
-    if (key !== sortKey) return ''
-    return sortDirection === 'asc' ? ' ▲' : ' ▼'
-  }
-
-  const currentUserHolder = useMemo(() => {
-    return holders.find((h) => h.address.toLowerCase() === userAddress.toLowerCase()) || holders[3] || null
-  }, [holders, userAddress])
-
-  const filteredRows = useMemo(() => {
-    let list = rows
-    if (selectedSport !== 'ALL') {
-      list = list.filter((r) => r.sport === selectedSport)
-    }
-    if (teamSearch.trim()) {
-      const q = teamSearch.toLowerCase()
-      list = list.filter((r) => r.away_team.toLowerCase().includes(q) || r.home_team.toLowerCase().includes(q))
-    }
-
-    return [...list].sort((a, b) => {
-      if (sortKey === 'game') {
-        return (a.away_team + a.home_team).localeCompare(b.away_team + b.home_team) * (sortDirection === 'asc' ? 1 : -1)
-      }
-      if (sortKey === 'date') {
-        return compareNumber(new Date(a.commence_time).getTime(), new Date(b.commence_time).getTime(), sortDirection)
-      }
-      if (sortKey === 'line') {
-        return compareNumber(a.market.consensus_spread, b.market.consensus_spread, sortDirection)
-      }
-      if (sortKey === 'gap') {
-        return compareNumber(modelGap(a), modelGap(b), sortDirection)
-      }
-      if (sortKey === 'odds') {
-        return compareNumber(coverOdds(a), coverOdds(b), sortDirection)
-      }
-      return compareNumber(a.edge_score, b.edge_score, sortDirection)
-    })
-  }, [rows, selectedSport, sortDirection, sortKey, teamSearch])
-
-  const selectedRow = filteredRows.find((r) => r.game_id === selectedGameId) || filteredRows[0] || null
-  const topGap = rows.reduce<number | null>((largest, r) => {
-    const gap = modelGap(r)
-    if (gap === null || !Number.isFinite(gap) || gap <= 0) return largest
+  const selectedRow = rows.find((row) => row.game_id === selectedGameId) ?? rows[0] ?? null
+  const openBets = agentBets.filter((bet) => bet.status === 'OPEN').length
+  const settledBets = agentBets.length - openBets
+  const topGap = rows.reduce<number | null>((largest, row) => {
+    const gap = Math.abs(modelGap(row) ?? 0)
+    if (!gap) return largest
     return largest === null || gap > largest ? gap : largest
-  }, null)
-
-  const latestUpdate = rows.reduce<string | null>((latest, r) => {
-    if (!latest) return r.updated_at
-    return new Date(r.updated_at) > new Date(latest) ? r.updated_at : latest
   }, null)
 
   return (
     <main className="shell">
-      <aside className="sidebar" aria-label="Controls">
+      <aside className="sidebar" aria-label="CoverageDesk controls">
         <div className="brand">
           <span className="brand-mark">CD</span>
           <div>
             <p>CoverageDesk</p>
-            <h1>Coverage Desk</h1>
+            <h1>Spread Protocol</h1>
           </div>
         </div>
 
-        <div className="user-wallet-card">
-          <span className="card-label">Holder Wallet</span>
-          <select value={userAddress} onChange={(e) => setUserAddress(e.target.value)} className="wallet-select">
-            {holders.map((h) => (
-              <option key={h.address} value={h.address}>
-                {h.address} ({h.percentage.toFixed(2)}%)
-              </option>
-            ))}
-          </select>
-
-          <div className="tier-badges">
-            {currentUserHolder?.is_dividend_eligible === 1 && (
-              <span className="badge div-badge">💰 &gt;1% Dividend Qualified</span>
-            )}
-            {currentUserHolder?.is_steering_eligible === 1 && (
-              <span className="badge steer-badge">🎯 ≥0.5% Line Steer Qualified</span>
-            )}
-          </div>
-        </div>
-
-        <nav className="side-nav">
-          <button className={activeTab === 'board' ? 'active' : ''} onClick={() => setActiveTab('board')}>
-            📊 Coverage Market Board
-          </button>
-          <button className={activeTab === 'bets' ? 'active' : ''} onClick={() => setActiveTab('bets')}>
-            🤖 Agent Bet Ledger ({agentBets.length})
-          </button>
+        <nav className="tab-nav" aria-label="Primary views">
+          {[
+            ['board', 'Board'],
+            ['agent', `Agent ${agentBets.length}`],
+            ['tokenomics', 'Token'],
+            ['steering', 'Steering'],
+          ].map(([tab, label]) => (
+            <button className={activeTab === tab ? 'active' : ''} key={tab} onClick={() => setActiveTab(tab as TabName)} type="button">
+              {label}
+            </button>
+          ))}
         </nav>
 
         {activeTab === 'board' && (
@@ -447,7 +437,7 @@ export function App() {
             <label className="field">
               <span>Team search</span>
               <input
-                onChange={(e) => setTeamSearch(e.target.value)}
+                onChange={(event) => setTeamSearch(event.target.value)}
                 placeholder="BYU, Texas, Notre Dame"
                 type="search"
                 value={teamSearch}
@@ -472,49 +462,78 @@ export function App() {
           </>
         )}
 
-        <div className="data-source token-card" onClick={() => setIsTokenModalOpen(true)}>
-          <div className="token-header">
-            <span>Coverage Protocol</span>
-            <strong className="cvr-ticker">$CVR</strong>
-          </div>
-          <small>{refreshing ? 'Updating live lines...' : `Bankroll: ${formatCurrency(tokenStats?.bankroll_balance)}`}</small>
-          <small className="click-hint">Click for Tokenomics &amp; Holders Ledger ➔</small>
+        <div className="feed-note">
+          <span>{refreshing ? 'Refreshing markets' : 'Auto refresh: 5 min'}</span>
+          <small>{rows.length.toLocaleString()} ranked markets</small>
+          <small>{board.source === 'preview' ? 'Preview feed' : board.source === 'kalshi' ? 'Kalshi feed' : 'Sportsbook feed'}</small>
+        </div>
+
+        <div className="side-ledger">
+          <span>Bankroll</span>
+          <strong>{formatCoverage(tokenStats?.bankroll_balance)}</strong>
+          <small>Burned {formatCoverage(tokenStats?.total_burned)}</small>
+          <small>Paid {formatCoverage(tokenStats?.total_distributed)}</small>
         </div>
       </aside>
 
       <section className="content">
-        <div className="topbar">
+        <header className="topbar">
           <div>
-            <p className="eyebrow">
-              {rows.length} lines • Top gap {formatSigned(topGap)} • Blue Chip model • {source} odds • Updated {latestUpdate ? formatDate(latestUpdate) : 'Live'}
+            <p className="eyebrow">coveragedesk.online</p>
+            <h2>
+              {activeTab === 'board' && 'Football spread desk'}
+              {activeTab === 'agent' && 'Agent ledger'}
+              {activeTab === 'tokenomics' && 'Token ledger'}
+              {activeTab === 'steering' && 'Holder steering'}
+            </h2>
+            <p className="board-meta">
+              {activeTab === 'board' && `${rows.length.toLocaleString()} markets | Top gap ${formatSigned(topGap)} | Updated ${formatDate(board.generated_at)}`}
+              {activeTab === 'agent' && `${openBets} open wagers | ${settledBets} settled | ${agentThoughts.length} market reads`}
+              {activeTab === 'tokenomics' && `${formatCoverage(tokenStats?.total_supply)} supply | ${formatPercent(tokenStats?.win_rate, 0)} win rate`}
+              {activeTab === 'steering' && `Minimum edge ${formatNumber(steeringStatus?.min_edge_threshold)} pts | Last burn ${formatCoverage(steeringStatus?.burned_tokens)}`}
             </p>
-            <h2>Best edges</h2>
           </div>
+          <button className="primary action-btn" disabled={isTicking} onClick={triggerAgentTick} type="button">
+            {isTicking ? 'Running cycle' : 'Run decision cycle'}
+          </button>
+        </header>
 
-          <div className="topbar-actions">
-            <button className="tokenomics-btn" onClick={() => setIsTokenModalOpen(true)}>
-              🔥 {formatCurrency(tokenStats?.total_burned)} Burned
-            </button>
-          </div>
-        </div>
+        {tickMessage && <div className="notice">{tickMessage}</div>}
 
-        {/* VIEW 1: SPREAD MARKET BOARD */}
         {activeTab === 'board' && (
           <>
-            <section className="detail-grid" aria-label="Selected Market Details">
+            <section className="metrics" aria-label="Board summary">
+              <div>
+                <span>Markets</span>
+                <strong>{rows.length.toLocaleString()}</strong>
+              </div>
+              <div>
+                <span>Top model gap</span>
+                <strong>{formatSigned(topGap)}</strong>
+              </div>
+              <div>
+                <span>Bankroll</span>
+                <strong>{formatCoverage(tokenStats?.bankroll_balance)}</strong>
+              </div>
+              <div>
+                <span>Open bets</span>
+                <strong>{openBets}</strong>
+              </div>
+            </section>
+
+            <section className="detail-grid">
               {selectedRow ? (
                 <>
                   <div className="detail-main">
                     <div className="ticket-head">
                       <div>
-                        <p className="eyebrow">{selectedRow.sport} / {marketTypeLabel(selectedRow).toUpperCase()}</p>
-                        <h3>{selectedRow.away_team} vs {selectedRow.home_team}</h3>
-                        <p className="team-breakdown">{selectedRow.away_team} wins</p>
+                        <p className="eyebrow">{selectedRow.sport} / {marketTypeLabel(selectedRow)}</p>
+                        <h3>{selectedRow.away_team} at {selectedRow.home_team}</h3>
+                        <p>{selectedRow.contract?.title ?? consensusLabel(selectedRow)}</p>
                       </div>
-
-                      <div className={`ticket-rating ${ratingClass(selectedRow)}`}>
-                        <span>{ratingGrade(selectedRow)}</span>
-                        <strong>{ratingPercent(selectedRow)}</strong>
+                      <div className={`ticket-rating ${edgeGrade(selectedRow)}`}>
+                        <span>{edgeGradeLabel(selectedRow)}</span>
+                        <strong>{formatPercent(selectedRow.metrics.confidence_score)}</strong>
                       </div>
                     </div>
 
@@ -525,15 +544,15 @@ export function App() {
                       </div>
                       <div>
                         <span>Model</span>
-                        <strong>{selectedRow.bluechip?.model_line ?? 'Unavailable'}</strong>
+                        <strong>{selectedRow.bluechip?.model_line ?? formatSigned(selectedRow.model.fair_spread)}</strong>
                       </div>
                       <div>
                         <span>Gap</span>
                         <strong>{formatSigned(modelGap(selectedRow))}</strong>
                       </div>
                       <div>
-                        <span>Odds</span>
-                        <strong>{formatCents(coverOdds(selectedRow))}</strong>
+                        <span>Price</span>
+                        <strong>{formatCents(coverPrice(selectedRow))}</strong>
                       </div>
                       <div>
                         <span>Move</span>
@@ -541,329 +560,289 @@ export function App() {
                       </div>
                       <div>
                         <span>Weather</span>
-                        <strong>{weatherColumnLabel(selectedRow)}</strong>
+                        <strong>{weatherLabel(selectedRow)}</strong>
                       </div>
                     </div>
-
-                    {selectedRow.agent_thoughts && selectedRow.agent_thoughts.length > 0 && (
-                      <div className="game-agent-thought">
-                        <span className="thought-title">🧠 Agent Reasoner:</span>
-                        <p>{selectedRow.agent_thoughts[0].thought}</p>
-                      </div>
-                    )}
                   </div>
 
                   <div className="detail-stack">
                     <div>
-                      <span>Why this rating</span>
-                      <strong>{selectedRow.rating?.summary ?? 'Rating explanation unavailable'}</strong>
-                      <small>{selectedRow.rating?.explanation}</small>
+                      <span>Source</span>
+                      <strong>{selectedRow.market.latest_book ?? selectedRow.data_source ?? 'Market feed'}</strong>
+                      <small>{selectedRow.market.book_count} books in consensus</small>
+                      <small>Updated {formatDate(selectedRow.updated_at)}</small>
                     </div>
-
-                    <button
-                      className="steer-line-btn"
-                      onClick={() => {
-                        setSteeringTargetGame(selectedRow)
-                        setSteerMessage(null)
-                      }}
-                    >
-                      🎯 Steer Line ($CVR)
-                    </button>
-
-                    {selectedRow.steering && (
-                      <div className="line-steering-active">
-                        <span>🔥 Holder Steered</span>
-                        <small>{selectedRow.steering.burned_tokens.toLocaleString()} $CVR burned on this line</small>
-                      </div>
-                    )}
+                    <div>
+                      <span>Protocol read</span>
+                      <strong>{edgeGradeLabel(selectedRow)} edge</strong>
+                      <small>Model gap {formatSigned(modelGap(selectedRow))}</small>
+                      <small>Weather {weatherLabel(selectedRow)}</small>
+                    </div>
                   </div>
                 </>
               ) : (
-                <div className="empty-panel">No market selected yet.</div>
+                <div className="empty-panel">No market selected.</div>
               )}
             </section>
 
             <section className="board-panel">
               <div className="panel-heading">
                 <div>
-                  <h3>Ranked line breakdown</h3>
-                  <p>Select a row to update the market breakdown above &amp; steer lines with $CVR.</p>
+                  <h3>Ranked market board</h3>
+                  <p>Select a market to update the ticket above.</p>
                 </div>
               </div>
-
               <div className="breakdown-header">
-                <button className={sortKey === 'edge' ? 'active' : ''} onClick={() => toggleSort('edge')} type="button">
-                  #<span>{sortLabel('edge')}</span>
-                </button>
-                <button className={sortKey === 'game' ? 'active' : ''} onClick={() => toggleSort('game')} type="button">
-                  Game<span>{sortLabel('game')}</span>
-                </button>
-                <button className={sortKey === 'date' ? 'active' : ''} onClick={() => toggleSort('date')} type="button">
-                  Date<span>{sortLabel('date')}</span>
-                </button>
-                <button className={sortKey === 'line' ? 'active' : ''} onClick={() => toggleSort('line')} type="button">
-                  Line<span>{sortLabel('line')}</span>
-                </button>
-                <button className={sortKey === 'gap' ? 'active' : ''} onClick={() => toggleSort('gap')} type="button">
-                  Gap<span>{sortLabel('gap')}</span>
-                </button>
-                <button className={sortKey === 'rating' ? 'active' : ''} onClick={() => toggleSort('rating')} type="button">
-                  Rating<span>{sortLabel('rating')}</span>
-                </button>
-                <button className={sortKey === 'weather' ? 'active' : ''} onClick={() => toggleSort('weather')} type="button">
-                  Weather<span>{sortLabel('weather')}</span>
-                </button>
-                <button className={sortKey === 'odds' ? 'active' : ''} onClick={() => toggleSort('odds')} type="button">
-                  Odds<span>{sortLabel('odds')}</span>
-                </button>
+                <span>#</span>
+                <span>Game</span>
+                <span>Date</span>
+                <span>Line</span>
+                <span>Gap</span>
+                <span>Read</span>
+                <span>Weather</span>
+                <span>Price</span>
               </div>
-
               <div className="breakdown-list">
-                {filteredRows.length ? (
-                  filteredRows.map((row, index) => {
-                    const expanded = expandedRatingId === row.game_id
-                    return (
-                      <div className={`breakdown-item ${expanded ? 'expanded' : ''}`} key={row.game_id}>
-                        <div
-                          className={`breakdown-row ${selectedRow?.game_id === row.game_id ? 'selected' : ''}`}
-                          onClick={() => setSelectedGameId(row.game_id)}
-                          role="button"
-                          tabIndex={0}
-                        >
-                          <span className="rank">{index + 1}</span>
-                          <span className="row-game">
-                            <strong>{row.away_team} vs {row.home_team}</strong>
-                            <small>{row.sport} / {marketTypeLabel(row)}</small>
-                          </span>
-                          <span className="row-date">
-                            <span className="mobile-label">Date</span>
-                            <strong>{formatDate(row.commence_time)}</strong>
-                            <small>{row.sport}</small>
-                          </span>
-                          <span className="row-market">
-                            <span className="mobile-label">Line</span>
-                            <strong>{consensusLabel(row)}</strong>
-                            <small>{row.bluechip?.model_line ? `Model ${row.bluechip.model_line}` : 'Model gap unavailable'}</small>
-                          </span>
-                          <span className="row-gap">
-                            <span className="mobile-label">Gap</span>
-                            <strong>{formatSigned(modelGap(row))}</strong>
-                          </span>
-                          <span className="row-rating">
-                            <span className="mobile-label">Rating</span>
-                            <button
-                              className={`rating-pill ${ratingClass(row)}`}
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setSelectedGameId(row.game_id)
-                                setExpandedRatingId(expanded ? null : row.game_id)
-                              }}
-                              type="button"
-                            >
-                              <strong>{ratingGrade(row)}</strong>
-                              <span>{ratingPercent(row)}</span>
-                            </button>
-                          </span>
-                          <span className="row-weather">
-                            <span className="mobile-label">Weather</span>
-                            <strong>{weatherColumnLabel(row)}</strong>
-                            <small>{row.bluechip?.weather?.condition ?? 'No weather'}</small>
-                          </span>
-                          <span className="row-odds">
-                            <span className="mobile-label">Odds</span>
-                            <strong>{formatCents(coverOdds(row))}</strong>
-                            <small>Move {formatSigned(row.metrics.line_move)}</small>
-                          </span>
-                        </div>
-                        {expanded ? (
-                          <div className="rating-explanation">
-                            <strong>{row.rating?.summary ?? 'Rating explanation unavailable'}</strong>
-                            <p>{row.rating?.explanation}</p>
-                            <button
-                              className="mini-steer-btn"
-                              onClick={() => setSteeringTargetGame(row)}
-                            >
-                              🎯 Steer This Line ($CVR)
-                            </button>
-                          </div>
-                        ) : null}
-                      </div>
-                    )
-                  })
+                {rows.length ? (
+                  rows.slice(0, 200).map((row, index) => (
+                    <button
+                      className={`breakdown-row ${selectedRow?.game_id === row.game_id ? 'selected' : ''}`}
+                      key={row.game_id}
+                      onClick={() => setSelectedGameId(row.game_id)}
+                      type="button"
+                    >
+                      <span className="rank">{index + 1}</span>
+                      <span className="row-game">
+                        <strong>{row.away_team} at {row.home_team}</strong>
+                        <small>{row.sport} / {marketTypeLabel(row)}</small>
+                      </span>
+                      <span className="row-date">
+                        <span className="mobile-label">Date</span>
+                        <strong>{formatDate(row.commence_time)}</strong>
+                        <small>{row.market.latest_book ?? row.data_source ?? 'feed'}</small>
+                      </span>
+                      <span className="row-market">
+                        <span className="mobile-label">Line</span>
+                        <strong>{consensusLabel(row)}</strong>
+                        <small>Model {row.bluechip?.model_line ?? formatSigned(row.model.fair_spread)}</small>
+                      </span>
+                      <span className="row-gap">
+                        <span className="mobile-label">Gap</span>
+                        <strong>{formatSigned(modelGap(row))}</strong>
+                      </span>
+                      <span className="row-rating">
+                        <span className="mobile-label">Read</span>
+                        <span className={`rating-pill ${edgeGrade(row)}`}>
+                          <strong>{edgeGradeLabel(row)}</strong>
+                          <span>{formatPercent(row.metrics.confidence_score)}</span>
+                        </span>
+                      </span>
+                      <span className="row-weather">
+                        <span className="mobile-label">Weather</span>
+                        <strong>{weatherLabel(row)}</strong>
+                        <small>{row.bluechip?.weather?.venue ?? 'No venue feed'}</small>
+                      </span>
+                      <span className="row-odds">
+                        <span className="mobile-label">Price</span>
+                        <strong>{formatCents(coverPrice(row))}</strong>
+                        <small>Move {formatSigned(row.metrics.line_move)}</small>
+                      </span>
+                    </button>
+                  ))
                 ) : (
-                  <div className="empty">No live markets match that search.</div>
+                  <div className="empty">No markets match that search.</div>
                 )}
               </div>
             </section>
           </>
         )}
 
-        {/* VIEW 2: AGENT BET LEDGER */}
-        {activeTab === 'bets' && (
-          <section className="bets-page">
-            <div className="panel-heading">
-              <h3>🤖 Agent Bets &amp; Profit Audit Ledger</h3>
-              <p>50% of net profits from winning bets automatically buy back and burn $CVR, and 50% are distributed to &gt;1% holders.</p>
-            </div>
-
-            <div className="bets-table">
-              <div className="bets-header">
-                <span>Bet ID</span>
-                <span>Matchup</span>
-                <span>Side / Line</span>
-                <span>Stake ($CVR)</span>
-                <span>Status</span>
-                <span>🔥 50% Buyback Burn</span>
-                <span>💰 50% Holder Dividend</span>
-                <span>Timestamp</span>
-              </div>
-              {agentBets.map((b) => (
-                <div className="bets-row" key={b.id}>
-                  <span><code>{b.id}</code></span>
-                  <span>{b.matchup}</span>
-                  <span><strong>{b.bet_side}</strong></span>
-                  <span>{b.stake.toLocaleString()}</span>
-                  <span><span className={`status-badge ${b.status.toLowerCase()}`}>{b.status}</span></span>
-                  <span className="burn-text">{b.buyback_burned ? `🔥 ${b.buyback_burned.toLocaleString()}` : '-'}</span>
-                  <span className="div-text">{b.dividend_distributed ? `💰 ${b.dividend_distributed.toLocaleString()}` : '-'}</span>
-                  <span><small>{formatDate(b.created_at)}</small></span>
+        {activeTab === 'agent' && (
+          <div className="two-column">
+            <section className="panel">
+              <div className="panel-heading compact">
+                <div>
+                  <h3>Market reads</h3>
+                  <p>Recent agent decisions, ordered newest first.</p>
                 </div>
-              ))}
-            </div>
-          </section>
+              </div>
+              <div className="thought-stream">
+                {agentThoughts.length ? agentThoughts.map((thought) => (
+                  <article className="thought-item" key={thought.id}>
+                    <div className="thought-header">
+                      <strong>{thought.matchup}</strong>
+                      <span>{formatDate(thought.created_at)}</span>
+                    </div>
+                    <p>{thought.thought}</p>
+                    <div className="row-meta">
+                      <span>Edge {formatNumber(thought.edge)}</span>
+                      <span>Confidence {formatPercent(thought.confidence)}</span>
+                      <span>{thought.bet_placed ? 'Bet placed' : 'No bet'}</span>
+                    </div>
+                  </article>
+                )) : <div className="empty">No agent reads yet.</div>}
+              </div>
+            </section>
+
+            <section className="panel">
+              <div className="panel-heading compact">
+                <div>
+                  <h3>Bet ledger</h3>
+                  <p>Settled wins split profit between burns and qualified holders.</p>
+                </div>
+              </div>
+              <div className="ledger-list">
+                {agentBets.length ? agentBets.map((bet) => (
+                  <article className="ledger-row" key={bet.id}>
+                    <div>
+                      <strong>{bet.matchup}</strong>
+                      <small>{bet.bet_side} / {bet.sport}</small>
+                    </div>
+                    <span>{formatCoverage(bet.stake)}</span>
+                    <span className={`status-badge ${bet.status.toLowerCase()}`}>{bet.status}</span>
+                    <span>{formatCoverage(bet.buyback_burned)}</span>
+                    <span>{formatCoverage(bet.dividend_distributed)}</span>
+                  </article>
+                )) : <div className="empty">No bets recorded yet.</div>}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {activeTab === 'tokenomics' && (
+          <div className="tokenomics-layout">
+            <section className="metrics">
+              <div>
+                <span>Total supply</span>
+                <strong>{formatCoverage(tokenStats?.total_supply)}</strong>
+              </div>
+              <div>
+                <span>Bankroll</span>
+                <strong>{formatCoverage(tokenStats?.bankroll_balance)}</strong>
+              </div>
+              <div>
+                <span>Total burned</span>
+                <strong>{formatCoverage(tokenStats?.total_burned)}</strong>
+              </div>
+              <div>
+                <span>Holder payouts</span>
+                <strong>{formatCoverage(tokenStats?.total_distributed)}</strong>
+              </div>
+            </section>
+
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h3>Holder qualification</h3>
+                  <p>Dividend threshold is &gt;1% supply. Steering threshold is &gt;=0.5% supply.</p>
+                </div>
+              </div>
+              <div className="holder-table">
+                <div className="holder-header">
+                  <span>Wallet</span>
+                  <span>Balance</span>
+                  <span>Supply</span>
+                  <span>Dividend</span>
+                  <span>Steering</span>
+                </div>
+                {holders.map((holder) => (
+                  <div className="holder-row" key={holder.address}>
+                    <strong>{compactAddress(holder.address)}</strong>
+                    <span>{formatCoverage(holder.balance)}</span>
+                    <span>{holder.percentage.toFixed(2)}%</span>
+                    <span className={holder.is_dividend_eligible ? 'yes' : 'no'}>{holder.is_dividend_eligible ? 'Qualified' : 'Below tier'}</span>
+                    <span className={holder.is_steering_eligible ? 'yes' : 'no'}>{holder.is_steering_eligible ? 'Qualified' : 'Below tier'}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {activeTab === 'steering' && (
+          <div className="two-column steering-layout">
+            <section className="panel">
+              <div className="panel-heading compact">
+                <div>
+                  <h3>Active weights</h3>
+                  <p>Current community inputs applied to the decision cycle.</p>
+                </div>
+              </div>
+              <div className="weights-grid">
+                <div>
+                  <span>Underdog bias</span>
+                  <strong>{formatNumber(steeringStatus?.underdog_bias, 2)}x</strong>
+                </div>
+                <div>
+                  <span>NCAAF weight</span>
+                  <strong>{formatNumber(steeringStatus?.ncaaf_weight, 2)}x</strong>
+                </div>
+                <div>
+                  <span>NFL weight</span>
+                  <strong>{formatNumber(steeringStatus?.nfl_weight, 2)}x</strong>
+                </div>
+                <div>
+                  <span>Min edge</span>
+                  <strong>{formatNumber(steeringStatus?.min_edge_threshold)} pts</strong>
+                </div>
+                <div className="directive-box">
+                  <span>Directive</span>
+                  <strong>{steeringStatus?.custom_directive ?? 'Default strategy'}</strong>
+                </div>
+              </div>
+            </section>
+
+            <section className="panel">
+              <div className="panel-heading compact">
+                <div>
+                  <h3>Submit steering burn</h3>
+                  <p>Qualified holders can burn tokens to adjust weights.</p>
+                </div>
+              </div>
+              <form className="steer-form" onSubmit={handleSteerSubmit}>
+                <label>
+                  <span>Holder wallet</span>
+                  <input onChange={(event) => setSteerAddress(event.target.value)} required type="text" value={steerAddress} />
+                </label>
+                <label>
+                  <span>Tokens to burn</span>
+                  <input
+                    min={50000}
+                    onChange={(event) => setSteerBurnTokens(Number(event.target.value))}
+                    step={10000}
+                    type="number"
+                    value={steerBurnTokens}
+                  />
+                </label>
+                <div className="slider-group">
+                  <label>
+                    <span>Underdog bias {formatNumber(steerUnderdogBias, 2)}x</span>
+                    <input max="2" min="0.5" onChange={(event) => setSteerUnderdogBias(Number(event.target.value))} step="0.05" type="range" value={steerUnderdogBias} />
+                  </label>
+                  <label>
+                    <span>NCAAF weight {formatNumber(steerNcaafWeight, 2)}x</span>
+                    <input max="2" min="0.5" onChange={(event) => setSteerNcaafWeight(Number(event.target.value))} step="0.05" type="range" value={steerNcaafWeight} />
+                  </label>
+                  <label>
+                    <span>NFL weight {formatNumber(steerNflWeight, 2)}x</span>
+                    <input max="2" min="0.5" onChange={(event) => setSteerNflWeight(Number(event.target.value))} step="0.05" type="range" value={steerNflWeight} />
+                  </label>
+                  <label>
+                    <span>Minimum edge {formatNumber(steerMinEdge)} pts</span>
+                    <input max="4" min="0.5" onChange={(event) => setSteerMinEdge(Number(event.target.value))} step="0.1" type="range" value={steerMinEdge} />
+                  </label>
+                </div>
+                <label>
+                  <span>Strategy directive</span>
+                  <textarea onChange={(event) => setSteerDirective(event.target.value)} rows={4} value={steerDirective} />
+                </label>
+                <button className="primary" type="submit">Burn and apply weights</button>
+              </form>
+              {steerMessage && <div className="notice compact-notice">{steerMessage}</div>}
+            </section>
+          </div>
         )}
       </section>
-
-      {/* MODAL 1: CONTEXTUAL PER-GAME LINE STEERING MODAL */}
-      {steeringTargetGame && (
-        <div className="modal-backdrop" onClick={() => setSteeringTargetGame(null)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>🎯 Steer Agent Weight: {steeringTargetGame.away_team} vs {steeringTargetGame.home_team}</h3>
-              <button className="close-btn" onClick={() => setSteeringTargetGame(null)}>✕</button>
-            </div>
-
-            <form onSubmit={handleGameSteerSubmit} className="modal-form">
-              <p className="modal-subtext">
-                Holders with <strong>≥ 0.5% $CVR</strong> (5,000,000+ tokens) can burn $CVR to steer the agent's edge weight and strategy bias for this specific matchup.
-              </p>
-
-              <label>
-                <span>Holder Address</span>
-                <input type="text" value={userAddress} disabled />
-              </label>
-
-              <label>
-                <span>$CVR Tokens to Burn to Weight This Line</span>
-                <input
-                  type="number"
-                  value={steerBurnTokens}
-                  onChange={(e) => setSteerBurnTokens(Number(e.target.value))}
-                  min={10000}
-                  step={5000}
-                />
-              </label>
-
-              <label>
-                <span>Underdog Bias Multiplier: {steerBias}x</span>
-                <input
-                  type="range"
-                  min="0.5"
-                  max="2.0"
-                  step="0.05"
-                  value={steerBias}
-                  onChange={(e) => setSteerBias(Number(e.target.value))}
-                />
-              </label>
-
-              <label>
-                <span>Custom Strategy Note for Agent</span>
-                <input
-                  type="text"
-                  value={steerDirective}
-                  onChange={(e) => setSteerDirective(e.target.value)}
-                  placeholder="E.g., Increase confidence weight on away underdog spread..."
-                />
-              </label>
-
-              <button type="submit" className="burn-action-btn">
-                🔥 Burn {steerBurnTokens.toLocaleString()} $CVR &amp; Steer Line
-              </button>
-
-              {steerMessage && <div className="modal-banner">{steerMessage}</div>}
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 2: TOKENOMICS & HOLDERS LEDGER MODAL */}
-      {isTokenModalOpen && (
-        <div className="modal-backdrop" onClick={() => setIsTokenModalOpen(false)}>
-          <div className="modal-card wide" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>🔥 Coverage ($CVR) Protocol Metrics &amp; Holders</h3>
-              <button className="close-btn" onClick={() => setIsTokenModalOpen(false)}>✕</button>
-            </div>
-
-            <div className="modal-body">
-              <section className="stats-grid">
-                <div className="stat-box">
-                  <span>Token Name / Ticker</span>
-                  <strong>Coverage ($CVR)</strong>
-                </div>
-                <div className="stat-box">
-                  <span>Total Supply</span>
-                  <strong>{tokenStats?.total_supply.toLocaleString()} $CVR</strong>
-                </div>
-                <div className="stat-box burn-box">
-                  <span>🔥 Total Buyback Burn</span>
-                  <strong>{formatCurrency(tokenStats?.total_burned)}</strong>
-                  <small>50% of net profits from winning bets</small>
-                </div>
-                <div className="stat-box div-box">
-                  <span>💰 Total Holder Dividends</span>
-                  <strong>{formatCurrency(tokenStats?.total_distributed)}</strong>
-                  <small>50% of net profits paid to &gt;1% holders</small>
-                </div>
-              </section>
-
-              <section className="holders-section">
-                <h4>🏆 Holder Qualification Ledger</h4>
-                <div className="holders-table">
-                  <div className="holders-header">
-                    <span>Address</span>
-                    <span>Balance ($CVR)</span>
-                    <span>% Supply</span>
-                    <span>&gt;1.0% Dividend Tier</span>
-                    <span>&ge;0.5% Line Steer Tier</span>
-                  </div>
-                  {holders.map((h) => (
-                    <div className="holders-row" key={h.address}>
-                      <span><strong>{h.address}</strong></span>
-                      <span>{h.balance.toLocaleString()}</span>
-                      <span><strong>{h.percentage.toFixed(2)}%</strong></span>
-                      <span>
-                        {h.is_dividend_eligible === 1 ? (
-                          <span className="badge div-eligible">✅ Dividend Eligible</span>
-                        ) : (
-                          <span className="badge ineligible">Ineligible</span>
-                        )}
-                      </span>
-                      <span>
-                        {h.is_steering_eligible === 1 ? (
-                          <span className="badge steer-eligible">🎯 Steer Allowed</span>
-                        ) : (
-                          <span className="badge ineligible">Ineligible</span>
-                        )}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            </div>
-          </div>
-        </div>
-      )}
     </main>
   )
 }
