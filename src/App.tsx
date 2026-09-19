@@ -4,6 +4,26 @@ type SportLabel = 'ALL' | 'SPORTS' | 'NCAAF' | 'NFL' | 'FINANCIALS' | 'ECONOMICS
 type TabName = 'board' | 'agent' | 'tokenomics' | 'steering'
 const REFRESH_MS = 5 * 60 * 1000
 
+function getBrandInfo() {
+  const hostname = typeof window !== 'undefined' ? window.location.hostname.toLowerCase() : ''
+  if (hostname.includes('lineedge')) {
+    return {
+      name: 'LineEdge',
+      mark: 'LE',
+      symbol: 'LINE',
+      domain: 'lineedge.online',
+      title: 'LineEdge | Agentic Sports Spread Protocol',
+    }
+  }
+  return {
+    name: 'CoverageDesk',
+    mark: 'CD',
+    symbol: 'CVR',
+    domain: 'coveragedesk.online',
+    title: 'CoverageDesk | Autonomous AI Sports Spread Protocol',
+  }
+}
+
 type BoardRow = {
   game_id: string
   data_source?: 'sportsbook' | 'kalshi'
@@ -358,6 +378,7 @@ async function fetchBoard(): Promise<BoardResponse> {
 }
 
 export function App() {
+  const brand = useMemo(() => getBrandInfo(), [])
   const [activeTab, setActiveTab] = useState<TabName>('board')
   const [board, setBoard] = useState<BoardResponse>(emptyBoard)
   const [selectedSport, setSelectedSport] = useState<SportLabel>('NCAAF')
@@ -381,7 +402,9 @@ export function App() {
   const [steerMessage, setSteerMessage] = useState<string | null>(null)
   const [legalModal, setLegalModal] = useState<'tos' | 'privacy' | 'risk' | null>(null)
 
-
+  useEffect(() => {
+    document.title = brand.title
+  }, [brand.title])
 
   async function loadData(showRefreshing = true) {
     if (showRefreshing) setRefreshing(true)
@@ -432,7 +455,7 @@ export function App() {
       }).then((r) => r.json())
 
       if (response.ok) {
-        setSteerMessage(`Burn accepted: ${formatTokenAmount(steerBurnTokens, tokenStats?.token_symbol ?? 'LINE')} committed to this market.`)
+        setSteerMessage(`Burn accepted: ${formatTokenAmount(steerBurnTokens, tokenStats?.token_symbol ?? brand.symbol)} committed to this market.`)
         await loadData()
       } else {
         setSteerMessage(`Steering rejected: ${response.detail || 'holder is not qualified.'}`)
@@ -479,7 +502,7 @@ export function App() {
     return largest === null || gap > largest ? gap : largest
   }, null)
   const protocolEnabled = tokenStats?.enabled === true
-  const tokenSymbol = tokenStats?.token_symbol ?? 'LINE'
+  const tokenSymbol = tokenStats?.token_symbol ?? brand.symbol
   const modeledCount = rows.filter(isModeled).length
   const slateLabel = showAllGames ? 'All dates' : formatSlateKey(slateKey)
 
@@ -491,11 +514,11 @@ export function App() {
 
   return (
     <main className="shell">
-      <aside className="sidebar" aria-label="LineEdge controls">
+      <aside className="sidebar" aria-label={`${brand.name} controls`}>
         <div className="brand">
-          <span className="brand-mark">LE</span>
+          <span className="brand-mark">{brand.mark}</span>
           <div>
-            <p>LineEdge</p>
+            <p>{brand.name}</p>
             <h1>Spread Protocol</h1>
           </div>
         </div>
@@ -981,8 +1004,8 @@ export function App() {
           <div className="footer-col">
             <h5>Token</h5>
             <div className="footer-links">
-              <span>Token Name: <strong>LineEdge</strong></span>
-              <span>Ticker: <strong>$LINE</strong></span>
+              <span>Token Name: <strong>{brand.name}</strong></span>
+              <span>Ticker: <strong>${brand.symbol}</strong></span>
               <span>Burn Pool: <strong>50%</strong> Net Profit</span>
               <span>Dividends: <strong>50%</strong> to &gt;1% Holders</span>
             </div>
@@ -990,8 +1013,8 @@ export function App() {
 
         </div>
         <div className="footer-bottom">
-          <span>&copy; {new Date().getFullYear()} LineEdge. All rights reserved.</span>
-          <span>Powered by LineEdge Agent Engine</span>
+          <span>&copy; {new Date().getFullYear()} {brand.name}. All rights reserved.</span>
+          <span>Powered by {brand.name} Agent Engine</span>
         </div>
       </footer>
       </section>
@@ -1007,7 +1030,7 @@ export function App() {
                   {legalModal === 'privacy' && 'Privacy Policy'}
                   {legalModal === 'risk' && 'Risk Disclosure & Disclaimer'}
                 </h3>
-                <p>LineEdge Protocol Legal Guidelines</p>
+                <p>{brand.name} Protocol Legal Guidelines</p>
               </div>
               <button className="icon-button" type="button" onClick={() => setLegalModal(null)}>✕</button>
             </header>
@@ -1015,13 +1038,13 @@ export function App() {
               {legalModal === 'tos' && (
                 <>
                   <h4>1. Acceptance of Terms</h4>
-                  <p>By accessing or using LineEdge (coveragedesk.online), you agree to be bound by these Terms of Service. If you do not agree, do not access or use the platform.</p>
+                  <p>By accessing or using {brand.name} ({brand.domain}), you agree to be bound by these Terms of Service. If you do not agree, do not access or use the platform.</p>
                   <h4>2. Experimental AI & Prediction Markets</h4>
-                  <p>LineEdge operates an autonomous AI decision agent that tracks sports spreads and prediction market pricing. All analytics, ratings, models, and automated transactions are provided on an experimental basis for informational and steering purposes.</p>
-                  <h4>3. Tokenomics ($LINE) & Holder Steering</h4>
-                  <p>$LINE utility tokens allow holders with &ge;0.5% supply to participate in line-weighting steering by burning tokens. 50% of simulated net agent profits are directed to automatic token buyback & burn, and 50% are distributed to qualified holders (&gt;1% supply).</p>
+                  <p>{brand.name} operates an autonomous AI decision agent that tracks sports spreads and prediction market pricing. All analytics, ratings, models, and automated transactions are provided on an experimental basis for informational and steering purposes.</p>
+                  <h4>3. Tokenomics (${brand.symbol}) & Holder Steering</h4>
+                  <p>${brand.symbol} utility tokens allow holders with &ge;0.5% supply to participate in line-weighting steering by burning tokens. 50% of simulated net agent profits are directed to automatic token buyback & burn, and 50% are distributed to qualified holders (&gt;1% supply).</p>
                   <h4>4. No Financial Advice</h4>
-                  <p>Content, models, and predictions produced by LineEdge do not constitute financial, investment, or gambling advice. Always conduct your own research.</p>
+                  <p>Content, models, and predictions produced by {brand.name} do not constitute financial, investment, or gambling advice. Always conduct your own research.</p>
                 </>
               )}
 
