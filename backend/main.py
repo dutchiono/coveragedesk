@@ -38,8 +38,9 @@ COVERAGEDESK_TOKEN_CA = (
   os.getenv("COVERAGEDESK_TOKEN_CA")
   or os.getenv("COVERAGE_TOKEN_CA")
   or os.getenv("CVR_TOKEN_CA")
-  or "4dmvTMheRkKL3phw2DhRVQpFEqtsDGWvJ1fFTQ6Fpump"
+  or ""
 ).strip()
+
 
 COVERAGEDESK_TOKEN_SYMBOL = os.getenv("COVERAGEDESK_TOKEN_SYMBOL", "$CVR").strip() or "$CVR"
 OPENCODE_API_KEY = os.getenv("OPENCODE_API_KEY", "").strip()
