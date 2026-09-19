@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 type SportLabel = 'ALL' | 'NFL' | 'NCAAF'
 type SortDirection = 'asc' | 'desc'
-type SortKey = 'edge' | 'game' | 'date' | 'line' | 'gap' | 'rating' | 'odds' | 'move'
+type SortKey = 'edge' | 'game' | 'date' | 'line' | 'gap' | 'rating' | 'weather' | 'odds' | 'move'
 const REFRESH_MS = 5 * 60 * 1000
 
 type BoardRow = {
@@ -162,6 +162,49 @@ function formatWeatherImpact(row: BoardRow) {
   return `Weather ${total} (${formatSigned(impact.total_adjustment)} pts)`
 }
 
+function weatherColumnLabel(row: BoardRow) {
+  const impact = row.weather_impact
+  if (!impact) return '-'
+  const adjustment = impact.total_adjustment
+  const condition = row.bluechip?.weather?.condition ?? impact.category
+  if (Math.abs(adjustment) < 0.1) {
+    if (condition.toLowerCase().includes('sun') || condition.toLowerCase().includes('clear')) return 'Clear'
+    return impact.score > 0 ? impact.category : 'Calm'
+  }
+  const conditionText = condition.toLowerCase()
+  const tag = conditionText.includes('rain') || conditionText.includes('shower')
+    ? 'Rain'
+    : conditionText.includes('snow')
+      ? 'Snow'
+      : (row.bluechip?.weather?.wind_mph ?? 0) >= 12
+        ? 'Wind'
+        : 'Weather'
+  return `${tag} ${formatSigned(adjustment)}`
+}
+
+function weatherSortValue(row: BoardRow) {
+  return Math.abs(row.weather_impact?.total_adjustment ?? 0)
+}
+
+function marketGroupKey(row: BoardRow) {
+  const teams = [row.away_team, row.home_team]
+    .map((team) => team.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim())
+    .sort()
+    .join('|')
+  return `${row.sport}|${teams}|${row.bet_type ?? 'spread'}`
+}
+
+function bestMarketRow(current: BoardRow | undefined, candidate: BoardRow) {
+  if (!current) return candidate
+  const currentScore = current.edge_score ?? 0
+  const candidateScore = candidate.edge_score ?? 0
+  if (candidateScore !== currentScore) return candidateScore > currentScore ? candidate : current
+  const currentProbability = current.rating?.probability ?? 0
+  const candidateProbability = candidate.rating?.probability ?? 0
+  if (candidateProbability !== currentProbability) return candidateProbability > currentProbability ? candidate : current
+  return Math.abs(candidate.metrics.line_move ?? 0) > Math.abs(current.metrics.line_move ?? 0) ? candidate : current
+}
+
 function marketTypeLabel(row: BoardRow) {
   if (row.bet_type === 'moneyline') return 'Moneyline'
   return row.bet_type === 'total' ? 'Over/under' : 'Spread'
@@ -273,7 +316,12 @@ function App() {
           `${row.away_team} ${row.home_team} ${row.contract?.title ?? ''}`.toLowerCase().includes(query),
         )
       : sportRows
-    return [...searchedRows].sort((a, b) => {
+    const grouped = new Map<string, BoardRow>()
+    for (const row of searchedRows) {
+      const key = marketGroupKey(row)
+      grouped.set(key, bestMarketRow(grouped.get(key), row))
+    }
+    return [...grouped.values()].sort((a, b) => {
       let result = 0
       if (sortKey === 'game') {
         result = compareText(`${a.away_team} ${a.home_team}`, `${b.away_team} ${b.home_team}`, sortDirection)
@@ -285,6 +333,8 @@ function App() {
         result = compareNumber(modelGap(a), modelGap(b), sortDirection)
       } else if (sortKey === 'rating') {
         result = compareNumber(a.rating?.probability, b.rating?.probability, sortDirection)
+      } else if (sortKey === 'weather') {
+        result = compareNumber(weatherSortValue(a), weatherSortValue(b), sortDirection)
       } else if (sortKey === 'odds') {
         result = compareNumber(coverOdds(a), coverOdds(b), sortDirection)
       } else if (sortKey === 'move') {
@@ -490,6 +540,9 @@ function App() {
             <button className={sortKey === 'rating' ? 'active' : ''} onClick={() => toggleSort('rating')} type="button">
               Rating<span>{sortLabel('rating')}</span>
             </button>
+            <button className={sortKey === 'weather' ? 'active' : ''} onClick={() => toggleSort('weather')} type="button">
+              Weather<span>{sortLabel('weather')}</span>
+            </button>
             <button className={sortKey === 'odds' ? 'active' : ''} onClick={() => toggleSort('odds')} type="button">
               Odds<span>{sortLabel('odds')}</span>
             </button>
@@ -547,6 +600,11 @@ function App() {
                           <strong>{ratingGrade(row)}</strong>
                           <span>{ratingPercent(row)}</span>
                         </button>
+                      </span>
+                      <span className="row-weather">
+                        <span className="mobile-label">Weather</span>
+                        <strong>{weatherColumnLabel(row)}</strong>
+                        <small>{row.bluechip?.weather?.condition ?? 'No weather'}</small>
                       </span>
                       <span className="row-odds">
                         <span className="mobile-label">Odds</span>

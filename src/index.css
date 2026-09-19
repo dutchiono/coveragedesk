@@ -369,7 +369,7 @@ th {
 
 .breakdown-header {
   display: grid;
-  grid-template-columns: 48px minmax(170px, 1.1fr) minmax(120px, 0.7fr) minmax(210px, 1.25fr) minmax(80px, 0.5fr) minmax(120px, 0.7fr) minmax(90px, 0.55fr);
+  grid-template-columns: 48px minmax(160px, 1.1fr) minmax(112px, 0.68fr) minmax(190px, 1.2fr) minmax(76px, 0.48fr) minmax(112px, 0.68fr) minmax(104px, 0.65fr) minmax(86px, 0.52fr);
   gap: 14px;
   padding: 10px 16px;
   border-bottom: 1px solid #e8e4da;
@@ -403,7 +403,7 @@ th {
 
 .breakdown-row {
   display: grid;
-  grid-template-columns: 48px minmax(170px, 1.1fr) minmax(120px, 0.7fr) minmax(210px, 1.25fr) minmax(80px, 0.5fr) minmax(120px, 0.7fr) minmax(90px, 0.55fr);
+  grid-template-columns: 48px minmax(160px, 1.1fr) minmax(112px, 0.68fr) minmax(190px, 1.2fr) minmax(76px, 0.48fr) minmax(112px, 0.68fr) minmax(104px, 0.65fr) minmax(86px, 0.52fr);
   gap: 14px;
   align-items: center;
   width: 100%;
@@ -431,6 +431,7 @@ th {
 .row-market,
 .row-gap,
 .row-rating,
+.row-weather,
 .row-odds {
   display: block;
   min-width: 0;
@@ -441,6 +442,8 @@ th {
 .row-date strong,
 .row-date small,
 .row-market strong,
+.row-weather strong,
+.row-weather small,
 .row-odds strong,
 .row-odds small {
   overflow: hidden;
@@ -452,12 +455,14 @@ th {
 .row-date strong,
 .row-market strong,
 .row-gap strong,
+.row-weather strong,
 .row-odds strong {
   color: #1b1e23;
 }
 
 .row-date small,
 .row-market small,
+.row-weather small,
 .row-odds small {
   display: block;
   margin-top: 4px;
@@ -886,6 +891,7 @@ pre {
   .row-market,
   .row-gap,
   .row-rating,
+  .row-weather,
   .row-odds,
   .breakdown-row .line-copy {
     grid-column: 2;
@@ -895,6 +901,7 @@ pre {
   .row-market,
   .row-gap,
   .row-rating,
+  .row-weather,
   .row-odds {
     display: grid;
     gap: 3px;
@@ -908,6 +915,8 @@ pre {
   .row-market strong,
   .row-date strong,
   .row-date small,
+  .row-weather strong,
+  .row-weather small,
   .row-odds strong,
   .row-odds small,
   .breakdown-row small,
@@ -917,6 +926,7 @@ pre {
 
   .row-gap,
   .row-rating,
+  .row-weather,
   .row-odds {
     border-top: 1px solid #efede7;
     padding-top: 10px;
