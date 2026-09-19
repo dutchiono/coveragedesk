@@ -64,6 +64,27 @@ type BoardRow = {
     url: string
     updated_at: string | null
   } | null
+  weather_impact?: {
+    score: number
+    category: string
+    wind_impact: number
+    precipitation_impact: number
+    temperature_impact: number
+    spread_adjustment: number
+    total_adjustment: number
+    adjusted_total: number | null
+    adjusted_spread: number | null
+    projected_score: {
+      team_a_points: number
+      team_b_points: number
+    } | null
+    confidence: number
+    assumptions: {
+      rain_pct: number
+      snow_in: number
+      gust_mph: number
+    }
+  } | null
   metrics: {
     model_market_gap: number | null
     line_move: number | null
@@ -115,6 +136,13 @@ function formatWeather(row: BoardRow) {
   const temp = weather.temperature_f === null ? '' : `, ${formatNumber(weather.temperature_f, 0)}F`
   const wind = weather.wind_mph === null ? '' : `, ${formatNumber(weather.wind_mph, 0)} mph`
   return `${weather.condition}${temp}${wind}`
+}
+
+function formatWeatherImpact(row: BoardRow) {
+  const impact = row.weather_impact
+  if (!impact) return 'Weather model -'
+  const total = impact.adjusted_total === null ? `total ${formatNumber(impact.total_adjustment)}` : `total ${formatNumber(impact.adjusted_total)}`
+  return `${impact.category} ${formatNumber(impact.score, 0)}/100, ${total}, conf ${formatNumber(impact.confidence, 0)}`
 }
 
 function marketTypeLabel(row: BoardRow) {
@@ -342,7 +370,7 @@ function App() {
                       </small>
                     </span>
                     <span className="line-copy">{breakdownLine(row)}</span>
-                    <span className="line-copy muted">{formatWeather(row)} / vol {formatVolume(row.contract?.volume_24h)}</span>
+                    <span className="line-copy muted">{formatWeather(row)} / {formatWeatherImpact(row)} / vol {formatVolume(row.contract?.volume_24h)}</span>
                   </button>
                 ))
               ) : (
@@ -364,7 +392,7 @@ function App() {
                     <br />
                     {breakdownLine(selectedRow)}
                     <br />
-                    {formatWeather(selectedRow)}
+                    {formatWeather(selectedRow)} / {formatWeatherImpact(selectedRow)}
                   </p>
                   <div className="line-chart" aria-label="Opening to current line">
                     <span>Prev {formatCents(selectedRow.contract?.previous_price ?? selectedRow.market.opening_spread)}</span>
@@ -402,6 +430,14 @@ function App() {
                     <span>Weather</span>
                     <strong>{selectedRow.bluechip?.weather.condition ?? '-'}</strong>
                     <small>{formatWeather(selectedRow)}</small>
+                  </div>
+                  <div>
+                    <span>Weather impact</span>
+                    <strong>{selectedRow.weather_impact ? `${selectedRow.weather_impact.category} ${formatNumber(selectedRow.weather_impact.score, 0)}/100` : '-'}</strong>
+                    <small>
+                      Total {formatNumber(selectedRow.weather_impact?.total_adjustment ?? null)}; confidence{' '}
+                      {formatNumber(selectedRow.weather_impact?.confidence ?? null, 0)}
+                    </small>
                   </div>
                   <div>
                     <span>Backend status</span>

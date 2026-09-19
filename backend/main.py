@@ -107,6 +107,10 @@ def fp_to_float(value: Any) -> float:
   return parsed if parsed is not None else 0
 
 
+def clamp(value: float, minimum: float, maximum: float) -> float:
+  return max(minimum, min(maximum, value))
+
+
 def extract_matchup(market: dict[str, Any]) -> tuple[str, str]:
   rules = market.get("rules_primary") or ""
   match = re.search(r"in the (.+?) vs (.+?) (?:college football|Pro Football)", rules)
@@ -127,6 +131,89 @@ def signed_line(team: str | None, spread: float | None) -> str | None:
   if not team or spread is None:
     return None
   return f"{team} {spread:+.1f}".replace("+", "")
+
+
+def inferred_precipitation(condition: str | None) -> tuple[float, float]:
+  text = (condition or "").lower()
+  rain_pct = 0.0
+  snow_in = 0.0
+  if any(word in text for word in ["rain", "drizzle", "shower", "thunder"]):
+    rain_pct = 60.0 if "patchy" in text or "nearby" in text else 80.0
+  if "snow" in text or "sleet" in text or "blizzard" in text:
+    snow_in = 1.0 if "light" in text or "patchy" in text else 2.0
+  return rain_pct, snow_in
+
+
+def weather_category(score: float) -> str:
+  if score < 15:
+    return "Minimal"
+  if score < 30:
+    return "Mild"
+  if score < 50:
+    return "Moderate"
+  if score < 70:
+    return "Severe"
+  return "Extreme"
+
+
+def weather_impact(bluechip: dict[str, Any] | None, baseline_total: float | None) -> dict[str, Any] | None:
+  if not bluechip:
+    return None
+  weather = bluechip.get("weather") or {}
+  condition = weather.get("condition")
+  temp = dollars_to_float(weather.get("temperature_f"))
+  wind = dollars_to_float(weather.get("wind_mph"))
+  if temp is None and wind is None and not condition:
+    return None
+
+  temp_f = temp if temp is not None else 65.0
+  wind_mph = max(wind if wind is not None else 0.0, 0.0)
+  gust_mph = wind_mph
+  rain_pct, snow_in = inferred_precipitation(condition)
+
+  wind_component = clamp((wind_mph - 5) / 20, 0, 1) * 35
+  gust_component = clamp((gust_mph - 10) / 30, 0, 1) * 15
+  rain_component = clamp(rain_pct / 100, 0, 1) * 15
+  snow_component = clamp(snow_in / 4, 0, 1) * 20
+  cold_component = clamp((40 - temp_f) / 35, 0, 1) * 10
+  score = round(clamp(wind_component + gust_component + rain_component + snow_component + cold_component, 0, 100), 1)
+
+  total_adjustment = -(score / 100) * 8.0
+  total_adjustment -= max(0, wind_mph - 12) * 0.10
+  total_adjustment -= max(0, gust_mph - 25) * 0.04
+  total_adjustment -= (rain_pct / 100) * 0.8
+  total_adjustment -= min(snow_in, 4) * 0.35
+  if temp_f < 25:
+    total_adjustment -= 0.5
+
+  adjusted_total = None if baseline_total is None else round(baseline_total + total_adjustment, 2)
+  model_spread = bluechip.get("model_spread")
+  adjusted_spread = None if model_spread is None else round(float(model_spread), 2)
+  projected = None
+  if adjusted_total is not None and adjusted_spread is not None:
+    projected = {
+      "team_a_points": round((adjusted_total + adjusted_spread) / 2, 2),
+      "team_b_points": round((adjusted_total - adjusted_spread) / 2, 2),
+    }
+
+  return {
+    "score": score,
+    "category": weather_category(score),
+    "wind_impact": round(wind_component + gust_component, 1),
+    "precipitation_impact": round(rain_component + snow_component, 1),
+    "temperature_impact": round(cold_component, 1),
+    "spread_adjustment": 0.0,
+    "total_adjustment": round(total_adjustment, 2),
+    "adjusted_total": adjusted_total,
+    "adjusted_spread": adjusted_spread,
+    "projected_score": projected,
+    "confidence": round(clamp(50 + score * 0.45, 50, 95), 1),
+    "assumptions": {
+      "rain_pct": rain_pct,
+      "snow_in": snow_in,
+      "gust_mph": gust_mph,
+    },
+  }
 
 
 def parse_bluechip_game(page: str, url: str) -> dict[str, Any] | None:
@@ -319,7 +406,10 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
           price_move = round((last_price - previous_price) * 100, 1)
         cover_price = yes_bid if yes_bid is not None else last_price
         model_gap = bluechip.get("gap") if bluechip and bet_type == "spread" else None
-        edge_score = round((model_gap or 0) * 10 + (cover_price or 0) * 100 + fp_to_float(market.get("volume_24h_fp")) / 1000, 2)
+        baseline_total = dollars_to_float(market.get("floor_strike")) if bet_type == "total" else None
+        impact = weather_impact(bluechip, baseline_total)
+        weather_score = impact.get("score", 0) if impact else 0
+        edge_score = round((model_gap or 0) * 10 + (cover_price or 0) * 100 + fp_to_float(market.get("volume_24h_fp")) / 1000 + weather_score / 5, 2)
 
         board.append(
           {
@@ -362,6 +452,7 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
               "updated_at": bluechip.get("updated_at") if bluechip else None,
             },
             "bluechip": bluechip,
+            "weather_impact": impact,
             "metrics": {
               "model_market_gap": model_gap,
               "line_move": price_move,
