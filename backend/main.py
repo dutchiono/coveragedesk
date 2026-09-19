@@ -102,6 +102,30 @@ def slugify(value: str) -> str:
   return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
 
 
+TEAM_ALIASES = {
+    "nc_state": "north_carolina_state",
+    "n_c_state": "north_carolina_state",
+    "ole_miss": "mississippi",
+    "appalachian_state": "app_state",
+    "appalachian_st": "app_state",
+    "penn_st": "penn_state",
+    "ohio_st": "ohio_state",
+    "oklahoma_st": "oklahoma_state",
+    "michigan_st": "michigan_state",
+    "arizona_st": "arizona_state",
+    "florida_st": "florida_state",
+    "kansas_st": "kansas_state",
+    "boise_st": "boise_state",
+    "fresno_st": "fresno_state",
+    "san_jose_st": "san_jose_state",
+    "san_diego_st": "san_diego_state",
+    "colorado_st": "colorado_state",
+    "utah_st": "utah_state",
+    "washington_st": "washington_state",
+    "oregon_st": "oregon_state",
+}
+
+
 def matchup_key(away_team: str, home_team: str) -> str:
   return "|".join(sorted([team_key(away_team), team_key(home_team)]))
 
@@ -110,7 +134,9 @@ def team_key(value: str) -> str:
   normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
   normalized = re.sub(r"\bst[.]?\b", "state", normalized, flags=re.I)
   normalized = normalized.replace("&", " and ")
-  return slugify(normalized)
+  slug = slugify(normalized)
+  return TEAM_ALIASES.get(slug, slug)
+
 
 
 def connect() -> sqlite3.Connection:
@@ -358,12 +384,21 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
 
 def extract_matchup(market: dict[str, Any]) -> tuple[str, str]:
   rules = market.get("rules_primary") or ""
-  match = re.search(r"in the (.+?) vs (.+?) (?:college football|Pro Football)", rules)
+  match = re.search(r"in the (.+?) vs (.+?) (?:college football|Pro Football|NFL)", rules, flags=re.I)
+  if not match:
+    match = re.search(r"the (.+?) vs (.+?) (?:college football|Pro Football|NFL)", rules, flags=re.I)
   if match:
     return match.group(1).strip(), match.group(2).strip()
   title = (market.get("title") or "").replace("?", "")
+  if " at " in title:
+    parts = title.split(" at ")
+    return parts[0].strip(), parts[1].strip()
+  if " vs " in title:
+    parts = title.split(" vs ")
+    return parts[0].strip(), parts[1].strip()
   team = title.replace("Will the ", "").replace(" win", "").strip()
   return team, "Opponent"
+
 
 
 def contract_side_type(market: dict[str, Any]) -> str | None:
@@ -498,103 +533,116 @@ async def fetch_bluechip_analytics() -> dict[str, Any]:
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   }
 
-  async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
-    resp = await client.get(BLUECHIP_WEEK_URL)
-    resp.raise_for_status()
-    page = resp.text
-
-  card_matches = re.findall(
-    r'<div class="matchup-header text-center">.*?<a href="([^"]+)".*?class="matchup-link">([^<]+)</a>.*?<div class="team text-end">.*?<div class="team-name">([^<]+)</div>.*?<div class="team-name">([^<]+)</div>',
-    page,
-    flags=re.S,
-  )
+  target_urls = [BLUECHIP_WEEK_URL]
+  for week in range(1, 12):
+    url = f"https://bluechipanalytics.com/college-football/games/2026/week{week}/"
+    if url not in target_urls:
+      target_urls.append(url)
 
   games: dict[str, Any] = {}
-  for rel_url, title, away, home in card_matches:
-    full_url = rel_url if rel_url.startswith("http") else f"https://bluechipanalytics.com{rel_url}"
-    key = matchup_key(away, home)
-    games[key] = {
-      "url": full_url,
-      "title": html.unescape(title.strip()),
-      "away_team": html.unescape(away.strip()),
-      "home_team": html.unescape(home.strip()),
-      "source": "Blue Chip Analytics",
-      "updated_at": now_iso(),
-    }
 
-  row_matches = re.findall(
-    r'<tr>\s*<td><a href="([^"]+)">([^<]+)</a></td>\s*<td>([^<]*)</td>\s*<td>([^<]*)</td>\s*<td>([^<]*)</td>\s*<td>([^<]*)</td>\s*<td>([^<]*)</td>',
-    page,
-    flags=re.S,
-  )
-
-  for rel_url, matchup, m_line, m_team, md_line, md_team, gap in row_matches:
-    teams = matchup.split(" vs ")
-    if len(teams) != 2:
-      continue
-    key = matchup_key(teams[0], teams[1])
-    game = games.setdefault(
-      key,
-      {
-        "url": rel_url if rel_url.startswith("http") else f"https://bluechipanalytics.com{rel_url}",
-        "title": matchup.strip(),
-        "away_team": teams[0].strip(),
-        "home_team": teams[1].strip(),
-        "source": "Blue Chip Analytics",
-        "updated_at": now_iso(),
-      },
-    )
-    game["market_line"] = m_line.strip() or None
-    game["market_team"] = m_team.strip() or None
-    game["model_line"] = md_line.strip() or None
-    game["model_team"] = md_team.strip() or None
-    game["market_spread"] = dollars_to_float(m_line)
-    game["model_spread"] = dollars_to_float(md_line)
-    game["gap"] = dollars_to_float(gap)
-
-  table_match = re.search(r'<tbody id="hub-game-table-body">(.*?)</tbody>', page, flags=re.S)
-  if table_match:
-    for row_html in re.findall(r"<tr>(.*?)</tr>", table_match.group(1), flags=re.S):
-      href_match = re.search(r'href="([^"]+)"', row_html)
-      team_cells = re.findall(r'<td class="team-col"[^>]*>(.*?)</td>', row_html, flags=re.S)
-      if len(team_cells) < 2:
+  async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
+    for target_url in target_urls:
+      try:
+        resp = await client.get(target_url)
+        if resp.status_code != 200:
+          continue
+        page = resp.text
+      except Exception:
         continue
 
-      away = clean_html_text(team_cells[0])
-      home = clean_html_text(team_cells[1])
-      if not away or not home:
-        continue
+      card_matches = re.findall(
+        r'<div class="matchup-header text-center">.*?<a href="([^"]+)".*?class="matchup-link">([^<]+)</a>.*?<div class="team text-end">.*?<div class="team-name">([^<]+)</div>.*?<div class="team-name">([^<]+)</div>',
+        page,
+        flags=re.S,
+      )
 
-      power_line = bluechip_table_cell(row_html, "powerline-col")
-      market_line = bluechip_table_cell(row_html, "line-col")
-      total = bluechip_table_cell(row_html, "ou-col")
-      model_team, model_spread = parse_team_line(power_line)
-      market_team, market_spread = parse_team_line(market_line)
-      key = matchup_key(away, home)
-      rel_url = href_match.group(1) if href_match else ""
-      game = games.setdefault(
-        key,
-        {
-          "url": rel_url if rel_url.startswith("http") else f"https://bluechipanalytics.com{rel_url}",
-          "title": f"{away} vs {home}",
-          "away_team": away,
-          "home_team": home,
+      for rel_url, title, away, home in card_matches:
+        full_url = rel_url if rel_url.startswith("http") else f"https://bluechipanalytics.com{rel_url}"
+        key = matchup_key(away, home)
+        games[key] = {
+          "url": full_url,
+          "title": html.unescape(title.strip()),
+          "away_team": html.unescape(away.strip()),
+          "home_team": html.unescape(home.strip()),
           "source": "Blue Chip Analytics",
           "updated_at": now_iso(),
-        },
+        }
+
+      row_matches = re.findall(
+        r'<tr>\s*<td><a href="([^"]+)">([^<]+)</a></td>\s*<td>([^<]*)</td>\s*<td>([^<]*)</td>\s*<td>([^<]*)</td>\s*<td>([^<]*)</td>\s*<td>([^<]*)</td>',
+        page,
+        flags=re.S,
       )
-      game["market_line"] = market_line
-      game["market_team"] = market_team
-      game["model_line"] = power_line
-      game["model_team"] = model_team
-      game["market_spread"] = market_spread
-      game["model_spread"] = model_spread
-      game["gap"] = round((market_spread or 0) - (model_spread or 0), 1) if market_spread is not None and model_spread is not None else None
-      game["market_total"] = dollars_to_float(total)
+
+      for rel_url, matchup, m_line, m_team, md_line, md_team, gap in row_matches:
+        teams = matchup.split(" vs ")
+        if len(teams) != 2:
+          continue
+        key = matchup_key(teams[0], teams[1])
+        game = games.setdefault(
+          key,
+          {
+            "url": rel_url if rel_url.startswith("http") else f"https://bluechipanalytics.com{rel_url}",
+            "title": matchup.strip(),
+            "away_team": teams[0].strip(),
+            "home_team": teams[1].strip(),
+            "source": "Blue Chip Analytics",
+            "updated_at": now_iso(),
+          },
+        )
+        game["market_line"] = m_line.strip() or None
+        game["market_team"] = m_team.strip() or None
+        game["model_line"] = md_line.strip() or None
+        game["model_team"] = md_team.strip() or None
+        game["market_spread"] = dollars_to_float(m_line)
+        game["model_spread"] = dollars_to_float(md_line)
+        game["gap"] = dollars_to_float(gap)
+
+      table_match = re.search(r'<tbody id="hub-game-table-body">(.*?)</tbody>', page, flags=re.S)
+      if table_match:
+        for row_html in re.findall(r"<tr>(.*?)</tr>", table_match.group(1), flags=re.S):
+          href_match = re.search(r'href="([^"]+)"', row_html)
+          team_cells = re.findall(r'<td class="team-col"[^>]*>(.*?)</td>', row_html, flags=re.S)
+          if len(team_cells) < 2:
+            continue
+
+          away = clean_html_text(team_cells[0])
+          home = clean_html_text(team_cells[1])
+          if not away or not home:
+            continue
+
+          power_line = bluechip_table_cell(row_html, "powerline-col")
+          market_line = bluechip_table_cell(row_html, "line-col")
+          total = bluechip_table_cell(row_html, "ou-col")
+          model_team, model_spread = parse_team_line(power_line)
+          market_team, market_spread = parse_team_line(market_line)
+          key = matchup_key(away, home)
+          rel_url = href_match.group(1) if href_match else ""
+          game = games.setdefault(
+            key,
+            {
+              "url": rel_url if rel_url.startswith("http") else f"https://bluechipanalytics.com{rel_url}",
+              "title": f"{away} vs {home}",
+              "away_team": away,
+              "home_team": home,
+              "source": "Blue Chip Analytics",
+              "updated_at": now_iso(),
+            },
+          )
+          game["market_line"] = market_line
+          game["market_team"] = market_team
+          game["model_line"] = power_line
+          game["model_team"] = model_team
+          game["market_spread"] = market_spread
+          game["model_spread"] = model_spread
+          game["gap"] = round((market_spread or 0) - (model_spread or 0), 1) if market_spread is not None and model_spread is not None else None
+          game["market_total"] = dollars_to_float(total)
 
   BLUECHIP_CACHE["expires_at"] = now + BLUECHIP_CACHE_SECONDS
   BLUECHIP_CACHE["games"] = games
   return games
+
 
 
 def weather_impact(bluechip: dict[str, Any] | None, baseline_total: float | None = None) -> dict[str, Any] | None:
