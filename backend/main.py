@@ -55,6 +55,8 @@ PROJECTIONS_PATH = Path(os.getenv("COVERAGEDESK_PROJECTIONS", ROOT / "data" / "p
 app = FastAPI(title="LineEdge API")
 
 BLUECHIP_CACHE: dict[str, Any] = {"expires_at": 0.0, "games": {}}
+BOARD_CACHE: dict[str, Any] = {"expires_at": 0.0, "data": None}
+BOARD_CACHE_SECONDS = int(os.getenv("BOARD_CACHE_SECONDS", "20"))
 AGENT_TASK: asyncio.Task[None] | None = None
 
 
@@ -416,15 +418,21 @@ def contract_side_type(market: dict[str, Any]) -> str | None:
 
 
 def contract_side_team(market: dict[str, Any], bluechip: dict[str, Any]) -> str | None:
-  label_key = team_key(market.get("yes_sub_title") or market.get("title") or "")
+  search_text = " ".join([
+    market.get("title") or "",
+    market.get("yes_sub_title") or "",
+    market.get("rules_primary") or "",
+    market.get("ticker") or "",
+  ])
+  search_key = team_key(search_text)
   candidates = [
+    bluechip.get("model_team"),
+    bluechip.get("market_team"),
     bluechip.get("away_team"),
     bluechip.get("home_team"),
-    bluechip.get("market_team"),
-    bluechip.get("model_team"),
   ]
   for candidate in candidates:
-    if candidate and team_key(candidate) in label_key:
+    if candidate and team_key(candidate) in search_key:
       return candidate
   return None
 
@@ -448,10 +456,18 @@ def contract_model_gap(
     adjusted_model = model_spread
     if weather_impact and weather_impact.get("spread_adjustment"):
       adjusted_model += weather_impact["spread_adjustment"]
-    side_team = contract_side_team(market, bluechip) or market_team
-    if side_team and model_team and team_key(side_team) != team_key(model_team):
-      return round(-adjusted_model - threshold, 1)
-    gap = adjusted_model - threshold
+
+    # In model spread data, negative number = favorite margin (e.g. -37.4 means favorite by 37.4 points)
+    model_margin = -adjusted_model if adjusted_model < 0 else adjusted_model
+
+    side_team = contract_side_team(market, bluechip) or model_team or market_team
+    is_model_team_side = bool(side_team and model_team and team_key(side_team) == team_key(model_team))
+
+    if is_model_team_side:
+      gap = model_margin - threshold
+    else:
+      gap = threshold - model_margin
+
     return round(gap, 1)
 
   if bet_type == "total":
@@ -476,7 +492,18 @@ def rating_for_market(
   weather_impact: dict[str, Any] | None,
   model_gap: float | None,
   cover_price: float | None,
+  is_started: bool = False,
 ) -> dict[str, Any]:
+  if is_started:
+    return {
+      "grade": "Even",
+      "edge": 0.0,
+      "summary": "In-Play (Pregame Model Paused)",
+      "explanation": "Game is currently in-play. Pregame model edge is paused during live play.",
+      "gap_points": model_gap or 0.0,
+      "price_edge_cents": 0.0,
+    }
+
   if model_gap is None or cover_price is None or cover_price <= 0:
     return {
       "grade": "Even",
@@ -487,8 +514,10 @@ def rating_for_market(
       "price_edge_cents": 0.0,
     }
 
+  # Ensure price_cents is strictly in cents scale (0.0 to 100.0)
+  price_cents = cover_price * 100.0 if cover_price <= 1.0 else cover_price
   fair_prob = clamp(0.5 + model_gap * 0.035, 0.05, 0.95)
-  market_prob = cover_price / 100.0
+  market_prob = price_cents / 100.0
   prob_edge = fair_prob - market_prob
   price_edge_cents = round(prob_edge * 100, 1)
 
@@ -509,7 +538,7 @@ def rating_for_market(
     summary = f"Fairly priced line ({model_gap:+.1f} pts)"
 
   side_label = market.get("yes_sub_title") or market.get("title") or "Side"
-  explanation = f"{summary}. Model projects {fair_prob * 100:.0f}% cover probability vs market price of {cover_price:.0f}¢ on {side_label}."
+  explanation = f"{summary}. Model projects {fair_prob * 100:.0f}% cover probability vs market price of {price_cents:.0f}¢ on {side_label}."
   return {
     "grade": grade,
     "edge": round(prob_edge, 3),
@@ -787,6 +816,10 @@ PRIMARY_CAT_MAP = {
 
 
 async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
+  now = time.time()
+  if BOARD_CACHE["expires_at"] > now and BOARD_CACHE["data"]:
+    return BOARD_CACHE["data"]
+
   bluechip_games = await fetch_bluechip_analytics()
   raw_count = 0
   board: list[dict[str, Any]] = []
@@ -829,11 +862,14 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
         if last_price is not None and previous_price is not None and previous_price > 0:
           price_move = round((last_price - previous_price) * 100, 1)
 
+        kickoff_time = market.get("occurrence_datetime") or market.get("open_time") or market.get("expected_expiration_time")
+        is_started = bool(kickoff_time and kickoff_time < captured_at)
+
         cover_price = yes_bid if yes_bid is not None else last_price
         baseline_total = dollars_to_float(market.get("floor_strike")) if bet_type == "total" else None
         impact = weather_impact(bluechip, baseline_total)
         model_gap = contract_model_gap(bet_type, market, bluechip, impact)
-        rating = rating_for_market(bet_type, market, bluechip, impact, model_gap, cover_price)
+        rating = rating_for_market(bet_type, market, bluechip, impact, model_gap, cover_price, is_started)
         weather_score = impact.get("score", 0) if impact else 0
         positive_gap = max(model_gap or 0, 0) if bet_type != "moneyline" else 0
         positive_edge = max(rating.get("edge") or 0, 0)
@@ -1073,10 +1109,13 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
       logger.warning("Error fetching multi-category Kalshi events: %s", e)
 
   ranked_rows = collapse_board_rows(board)
-  return (
+  result = (
     ranked_rows,
     f"Fetched {raw_count} Kalshi contracts across Sports, Finance, Macro, Politics & Tech; {len(ranked_rows)} active lines ready",
   )
+  BOARD_CACHE["expires_at"] = time.time() + BOARD_CACHE_SECONDS
+  BOARD_CACHE["data"] = result
+  return result
 
 
 def market_prompt_line(row: dict[str, Any], rank: int) -> str:

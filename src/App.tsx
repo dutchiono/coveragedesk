@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 
 type SportLabel = 'ALL' | 'SPORTS' | 'NCAAF' | 'NFL' | 'FINANCIALS' | 'ECONOMICS' | 'POLITICS' | 'TECH' | 'CULTURE'
 type TabName = 'board' | 'agent' | 'tokenomics' | 'steering'
-const REFRESH_MS = 5 * 60 * 1000
+const REFRESH_MS = 30 * 1000
 
 function getBrandInfo() {
   const hostname = typeof window !== 'undefined' ? window.location.hostname.toLowerCase() : ''
@@ -281,7 +281,8 @@ function formatPercent(value: number | null | undefined, digits = 0): string {
 
 function formatCents(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-'
-  return `${Math.round(value * 100)}c`
+  const cents = value <= 1.0 ? Math.round(value * 100) : Math.round(value)
+  return `${cents}c`
 }
 
 function modelGap(row: BoardRow): number | null {
@@ -330,6 +331,7 @@ function gameTitle(row: BoardRow): string {
 
 function ratingLabel(row: BoardRow): string {
   if (row.is_arb) return '⚡ Orderbook Arb'
+  if (row.is_started) return '🔴 In-Play'
   if (!isModeled(row)) return row.category ?? row.raw_category ?? 'Kalshi'
   if (!row.rating) return 'Model'
   return row.rating?.grade ?? 'Fair'
@@ -337,6 +339,7 @@ function ratingLabel(row: BoardRow): string {
 
 function ratingValue(row: BoardRow): string {
   if (row.is_arb && row.contract) return `${row.contract.yes_bid ?? 0}c / ${row.contract.no_bid ?? 0}c`
+  if (row.is_started) return 'Live'
   if (!isModeled(row)) return row.contract?.yes_bid ? `${row.contract.yes_bid}c` : 'Market'
   const cents = row.rating?.price_edge_cents
   if (cents !== null && cents !== undefined && Number.isFinite(cents) && Math.abs(cents) >= 0.1) {
@@ -347,6 +350,7 @@ function ratingValue(row: BoardRow): string {
 
 function ratingClass(row: BoardRow): string {
   if (row.is_arb) return 'prime'
+  if (row.is_started) return 'lean'
   if (!isModeled(row)) return 'lean'
   const grade = (row.rating?.grade ?? 'Even').toLowerCase().replace(/\s+/g, '-')
   if (grade.includes('strong-buy')) return 'prime'
