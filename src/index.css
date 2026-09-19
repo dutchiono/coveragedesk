@@ -621,34 +621,100 @@ th {
   padding: 22px;
 }
 
-.detail-main h3 {
+.ticket-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+  border-bottom: 1px solid #efede7;
+  padding-bottom: 18px;
+}
+
+.ticket-head h3,
+.ticket-head p {
   margin: 0;
-  font-size: clamp(1.6rem, 2.4vw, 2.4rem);
 }
 
-.line-chart {
+.ticket-head h3 {
+  font-size: clamp(1.3rem, 2vw, 2rem);
+}
+
+.ticket-head p:not(.eyebrow) {
+  margin-top: 6px;
+  color: #4f5652;
+}
+
+.ticket-rating {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  gap: 12px;
-  align-items: center;
-  margin-top: 28px;
-}
-
-.line-chart::before,
-.line-chart::after {
-  display: block;
-  height: 3px;
-  background: #d4f07d;
-  content: "";
-}
-
-.line-chart span,
-.line-chart strong {
-  min-height: 38px;
-  border-radius: 6px;
+  min-width: 128px;
+  min-height: 72px;
+  place-items: center;
+  border-radius: 8px;
   padding: 10px 12px;
-  background: #f5f3ee;
   text-align: center;
+}
+
+.ticket-rating span,
+.ticket-rating strong {
+  display: block;
+}
+
+.ticket-rating span {
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.ticket-rating strong {
+  font-size: 1.55rem;
+}
+
+.ticket-rating.excellent {
+  background: #d4f07d;
+  color: #18201d;
+}
+
+.ticket-rating.great {
+  background: #cfe4ff;
+  color: #123861;
+}
+
+.ticket-rating.good {
+  background: #f1e4c8;
+  color: #5d4218;
+}
+
+.ticket-rating.even {
+  background: #ebe7df;
+  color: #535a56;
+}
+
+.ticket-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.ticket-grid div {
+  display: grid;
+  gap: 5px;
+  border-radius: 6px;
+  background: #f5f3ee;
+  padding: 12px;
+}
+
+.ticket-grid span {
+  color: #656b68;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.ticket-grid strong {
+  overflow: hidden;
+  color: #1b1e23;
+  text-overflow: ellipsis;
 }
 
 .detail-stack {
@@ -860,12 +926,15 @@ pre {
     margin: 0 14px 14px 50px;
   }
 
-  .line-chart {
-    grid-template-columns: 1fr;
+  .ticket-head {
+    flex-direction: column;
   }
 
-  .line-chart::before,
-  .line-chart::after {
-    display: none;
+  .ticket-rating {
+    width: 100%;
+  }
+
+  .ticket-grid {
+    grid-template-columns: 1fr;
   }
 }

@@ -167,11 +167,6 @@ function marketTypeLabel(row: BoardRow) {
   return row.bet_type === 'total' ? 'Over/under' : 'Spread'
 }
 
-function breakdownLine(row: BoardRow) {
-  const model = row.bluechip?.model_line ? `Model ${row.bluechip.model_line}; gap ${formatSigned(modelGap(row))}` : 'Model gap unavailable'
-  return `${marketTypeLabel(row)}: ${consensusLabel(row)} | odds ${formatCents(coverOdds(row))} | ${model}`
-}
-
 function ratingGrade(row: BoardRow) {
   return row.rating?.grade ?? 'Even'
 }
@@ -407,46 +402,56 @@ function App() {
           {selectedRow ? (
             <>
               <div className="detail-main">
-                <p className="eyebrow">{selectedRow.sport}</p>
-                <h3>{selectedRow.contract?.title ?? `${selectedRow.away_team} at ${selectedRow.home_team}`}</h3>
-                <p className="team-breakdown">
-                  {selectedRow.away_team} vs {selectedRow.home_team}
-                  <br />
-                  {breakdownLine(selectedRow)}
-                  {formatWeatherImpact(selectedRow) ? (
-                    <>
-                      <br />
-                      {formatWeather(selectedRow)} / {formatWeatherImpact(selectedRow)}
-                    </>
-                  ) : null}
-                </p>
-                <div className="line-chart" aria-label="Opening to current line">
-                  <span>Prev {formatCents(selectedRow.contract?.previous_price ?? selectedRow.market.opening_spread)}</span>
-                  <strong>Last {formatCents(selectedRow.contract?.last_price ?? selectedRow.market.consensus_spread)}</strong>
-                  <span>Move {formatNumber(selectedRow.metrics.line_move)}</span>
+                <div className="ticket-head">
+                  <div>
+                    <p className="eyebrow">{selectedRow.sport} / {marketTypeLabel(selectedRow)}</p>
+                    <h3>{selectedRow.away_team} vs {selectedRow.home_team}</h3>
+                    <p>{selectedRow.contract?.title ?? consensusLabel(selectedRow)}</p>
+                  </div>
+                  <div className={`ticket-rating ${ratingClass(selectedRow)}`}>
+                    <span>{ratingGrade(selectedRow)}</span>
+                    <strong>{ratingPercent(selectedRow)}</strong>
+                  </div>
+                </div>
+
+                <div className="ticket-grid" aria-label="Selected market details">
+                  <div>
+                    <span>Line</span>
+                    <strong>{consensusLabel(selectedRow)}</strong>
+                  </div>
+                  <div>
+                    <span>Model</span>
+                    <strong>{selectedRow.bluechip?.model_line ?? 'Unavailable'}</strong>
+                  </div>
+                  <div>
+                    <span>Gap</span>
+                    <strong>{formatSigned(modelGap(selectedRow))}</strong>
+                  </div>
+                  <div>
+                    <span>Odds</span>
+                    <strong>{formatCents(coverOdds(selectedRow))}</strong>
+                  </div>
+                  <div>
+                    <span>Move</span>
+                    <strong>{formatSigned(selectedRow.metrics.line_move)}</strong>
+                  </div>
+                  <div>
+                    <span>Weather</span>
+                    <strong>{formatWeatherImpact(selectedRow) ?? 'No material adjustment'}</strong>
+                  </div>
                 </div>
               </div>
               <div className="detail-stack">
                 <div>
-                  <span>Rating</span>
-                  <strong>{ratingGrade(selectedRow)} {ratingPercent(selectedRow)}</strong>
-                  <small>{selectedRow.rating?.summary ?? 'Rating explanation unavailable'}</small>
-                </div>
-                <div>
-                  <span>Odds</span>
-                  <strong>{formatCents(coverOdds(selectedRow))}</strong>
-                  <small>Current price for this line; move {formatSigned(selectedRow.metrics.line_move)}</small>
-                </div>
-                <div>
-                  <span>Model gap</span>
-                  <strong>{formatSigned(modelGap(selectedRow))}</strong>
-                  <small>
-                    {selectedRow.bluechip?.model_line ?? 'Model unavailable'} vs {selectedRow.bluechip?.market_line ?? consensusLabel(selectedRow)}
-                  </small>
+                  <span>Why this rating</span>
+                  <strong>{selectedRow.rating?.summary ?? 'Rating explanation unavailable'}</strong>
+                  {(selectedRow.rating?.reasons ?? []).slice(0, 3).map((reason) => (
+                    <small key={reason}>{reason}</small>
+                  ))}
                 </div>
                 {formatWeatherImpact(selectedRow) ? (
                   <div>
-                    <span>Weather adjustment</span>
+                    <span>Weather</span>
                     <strong>{formatSigned(selectedRow.weather_impact?.total_adjustment ?? null)} pts</strong>
                     <small>{formatWeather(selectedRow)}</small>
                   </div>
