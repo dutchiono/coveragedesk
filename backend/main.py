@@ -840,11 +840,31 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
         edge_score = 0 if rating.get("grade") == "Even" else round(positive_gap * 10 + positive_edge * 10 + weather_score / 10, 2)
 
         is_arb = bool(yes_ask is not None and no_ask is not None and yes_ask > 0 and no_ask > 0 and (yes_ask + no_ask) <= 98.0)
+        event_ticker = market.get("event_ticker") or ""
+        series_ticker = market.get("series_ticker") or series or ""
+        ticker_clean = ticker.lower().strip()
+        event_clean = event_ticker.lower().strip()
+        series_clean = series_ticker.lower().strip()
+
+        if series_clean and event_clean:
+          kalshi_url = f"https://kalshi.com/markets/{series_clean}/{event_clean}"
+        elif event_clean:
+          kalshi_url = f"https://kalshi.com/markets/{event_clean}"
+        else:
+          kalshi_url = f"https://kalshi.com/markets/{ticker_clean}"
+
         kickoff_time = market.get("occurrence_datetime") or market.get("open_time") or market.get("expected_expiration_time")
-        close_time = market.get("close_time") or market.get("expiration_time")
-        resolution_time = market.get("expected_expiration_time") or market.get("expiration_time")
+        raw_close = market.get("close_time") or market.get("expiration_time")
+        raw_res = market.get("expected_expiration_time") or market.get("expiration_time")
+
+        if raw_res and raw_close and raw_close > raw_res:
+          close_time = raw_res
+          resolution_time = raw_res
+        else:
+          close_time = raw_close
+          resolution_time = raw_res
+
         is_started = bool(kickoff_time and kickoff_time < captured_at)
-        kalshi_url = f"https://kalshi.com/markets/{ticker}"
 
         board.append(
           {
@@ -873,6 +893,8 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
             },
             "contract": {
               "ticker": ticker,
+              "event_ticker": event_ticker,
+              "series_ticker": series_ticker or series,
               "title": (market.get("title") or "").replace("?", ""),
               "side_label": market.get("yes_sub_title") or market.get("title"),
               "yes_bid": yes_bid,
@@ -950,11 +972,31 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
             open_interest = fp_to_float(market.get("open_interest_fp"))
 
             is_arb = bool(yes_ask is not None and no_ask is not None and yes_ask > 0 and no_ask > 0 and (yes_ask + no_ask) <= 98.0)
+            event_ticker = market.get("event_ticker") or ev.get("event_ticker") or ""
+            series_ticker = market.get("series_ticker") or ev.get("series_ticker") or ""
+            ticker_clean = ticker.lower().strip()
+            event_clean = event_ticker.lower().strip()
+            series_clean = series_ticker.lower().strip()
+
+            if series_clean and event_clean:
+              kalshi_url = f"https://kalshi.com/markets/{series_clean}/{event_clean}"
+            elif event_clean:
+              kalshi_url = f"https://kalshi.com/markets/{event_clean}"
+            else:
+              kalshi_url = f"https://kalshi.com/markets/{ticker_clean}"
+
             kickoff_time = market.get("open_time") or market.get("expected_expiration_time") or captured_at
-            close_time = market.get("close_time") or market.get("expiration_time")
-            resolution_time = market.get("expected_expiration_time") or market.get("expiration_time")
+            raw_close = market.get("close_time") or market.get("expiration_time")
+            raw_res = market.get("expected_expiration_time") or market.get("expiration_time")
+
+            if raw_res and raw_close and raw_close > raw_res:
+              close_time = raw_res
+              resolution_time = raw_res
+            else:
+              close_time = raw_close
+              resolution_time = raw_res
+
             is_started = bool(kickoff_time and kickoff_time < captured_at)
-            kalshi_url = f"https://kalshi.com/markets/{ticker}"
 
             title = (market.get("title") or ev.get("title") or "").replace("?", "")
             side_label = market.get("yes_sub_title") or market.get("title") or title
@@ -995,6 +1037,8 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
                 },
                 "contract": {
                   "ticker": ticker,
+                  "event_ticker": event_ticker,
+                  "series_ticker": series_ticker,
                   "title": title,
                   "side_label": side_label,
                   "yes_bid": yes_bid,

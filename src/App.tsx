@@ -56,6 +56,8 @@ type BoardRow = {
   }
   contract?: {
     ticker: string
+    event_ticker?: string
+    series_ticker?: string
     title: string
     side_label: string | null
     yes_bid: number | null
@@ -365,8 +367,20 @@ function rowMatches(row: BoardRow, query: string): boolean {
 }
 
 function compactAddress(address: string): string {
+  if (!address) return 'Not set'
   if (address.length <= 18) return address
   return `${address.slice(0, 8)}...${address.slice(-6)}`
+}
+
+function getKalshiUrl(row: BoardRow): string {
+  if (row.kalshi_url) return row.kalshi_url.toLowerCase()
+  if (row.contract?.event_ticker) {
+    const series = (row.contract.series_ticker || '').toLowerCase()
+    const event = row.contract.event_ticker.toLowerCase()
+    return series ? `https://kalshi.com/markets/${series}/${event}` : `https://kalshi.com/markets/${event}`
+  }
+  const cleanId = (row.game_id || row.contract?.ticker || '').toLowerCase()
+  return cleanId ? `https://kalshi.com/markets/${cleanId}` : 'https://kalshi.com/markets'
 }
 
 async function fetchBoard(): Promise<BoardResponse> {
@@ -406,7 +420,6 @@ export function App() {
   const [steerDirective, setSteerDirective] = useState('')
   const [steerMessage, setSteerMessage] = useState<string | null>(null)
   const [legalModal, setLegalModal] = useState<'tos' | 'privacy' | 'risk' | null>(null)
-  const [copySuccess, setCopySuccess] = useState(false)
 
   useEffect(() => {
     document.title = brand.title
@@ -601,32 +614,7 @@ export function App() {
 
         {protocolEnabled && (
           <div className="side-ledger">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>{tokenSymbol} contract</span>
-              <button
-                className="copy-ca-btn"
-                style={{
-                  background: 'none',
-                  border: '1px solid #3c4a43',
-                  borderRadius: '4px',
-                  color: '#d4f07d',
-                  fontSize: '0.72rem',
-                  padding: '2px 6px',
-                  cursor: 'pointer'
-                }}
-                onClick={() => {
-                  if (tokenStats?.contract_address) {
-                    navigator.clipboard.writeText(tokenStats.contract_address)
-                    setCopySuccess(true)
-                    setTimeout(() => setCopySuccess(false), 2000)
-                  }
-                }}
-                title="Copy full Contract Address"
-              >
-                {copySuccess ? 'Copied!' : 'Copy'}
-              </button>
-            </div>
-            <strong>{compactAddress(tokenStats?.contract_address ?? '')}</strong>
+            <span>{tokenSymbol} ledger</span>
             <small>Burned {formatTokenAmount(tokenStats?.total_burned, tokenSymbol)}</small>
             <small>Paid {formatTokenAmount(tokenStats?.total_distributed, tokenSymbol)}</small>
           </div>
@@ -687,7 +675,7 @@ export function App() {
                       </div>
                       <a
                         className={`ticket-rating ${ratingClass(selectedRow)}`}
-                        href={selectedRow.kalshi_url || `https://kalshi.com/markets/${selectedRow.game_id}`}
+                        href={getKalshiUrl(selectedRow)}
                         target="_blank"
                         rel="noopener noreferrer"
                         title="Click to view and place bet on Kalshi.com"
@@ -740,7 +728,7 @@ export function App() {
                     </div>
                     <a
                       className="button primary-button"
-                      href={selectedRow.kalshi_url || `https://kalshi.com/markets/${selectedRow.game_id}`}
+                      href={getKalshiUrl(selectedRow)}
                       target="_blank"
                       rel="noopener noreferrer"
                       style={{ textAlign: 'center', marginTop: '4px', textDecoration: 'none' }}
@@ -803,7 +791,7 @@ export function App() {
                         <span className="mobile-label">Read</span>
                         <a
                           className={`rating-pill ${ratingClass(row)}`}
-                          href={row.kalshi_url || `https://kalshi.com/markets/${row.game_id}`}
+                          href={getKalshiUrl(row)}
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
@@ -888,29 +876,6 @@ export function App() {
 
         {activeTab === 'tokenomics' && protocolEnabled && (
           <div className="tokenomics-layout">
-            <section className="panel ca-card" style={{ marginBottom: '14px', background: '#0f1513', border: '1px solid #3c4a43', padding: '16px', borderRadius: '6px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-                <div>
-                  <span style={{ color: '#a8b2a6', fontSize: '0.8rem', fontWeight: 700, textTransform: 'uppercase' }}>Token Contract Address (CA)</span>
-                  <div style={{ color: '#d4f07d', fontFamily: 'monospace', fontSize: '1.05rem', fontWeight: 'bold', marginTop: '4px', wordBreak: 'break-all' }}>
-                    {tokenStats?.contract_address}
-                  </div>
-                </div>
-                <button
-                  className="primary"
-                  style={{ background: '#d4f07d', color: '#18201d', border: 'none', padding: '8px 16px', fontWeight: 900, borderRadius: '4px', cursor: 'pointer' }}
-                  onClick={() => {
-                    if (tokenStats?.contract_address) {
-                      navigator.clipboard.writeText(tokenStats.contract_address)
-                      setCopySuccess(true)
-                      setTimeout(() => setCopySuccess(false), 2000)
-                    }
-                  }}
-                >
-                  {copySuccess ? 'Copied CA!' : 'Copy Contract Address'}
-                </button>
-              </div>
-            </section>
             <section className="metrics">
               <div>
                 <span>Total supply</span>
