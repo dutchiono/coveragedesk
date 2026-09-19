@@ -38,7 +38,7 @@ COVERAGEDESK_TOKEN_CA = (
   os.getenv("COVERAGEDESK_TOKEN_CA")
   or os.getenv("COVERAGE_TOKEN_CA")
   or os.getenv("CVR_TOKEN_CA")
-  or ""
+  or "EJWD6ZTMTE2NdQtwgcLcDFNecueuUhZMxx4WNGospump"
 ).strip()
 
 

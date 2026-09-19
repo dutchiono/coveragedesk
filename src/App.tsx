@@ -406,6 +406,7 @@ export function App() {
   const [steerDirective, setSteerDirective] = useState('')
   const [steerMessage, setSteerMessage] = useState<string | null>(null)
   const [legalModal, setLegalModal] = useState<'tos' | 'privacy' | 'risk' | null>(null)
+  const [copySuccess, setCopySuccess] = useState(false)
 
   useEffect(() => {
     document.title = brand.title
@@ -600,7 +601,31 @@ export function App() {
 
         {protocolEnabled && (
           <div className="side-ledger">
-            <span>{tokenSymbol} contract</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>{tokenSymbol} contract</span>
+              <button
+                className="copy-ca-btn"
+                style={{
+                  background: 'none',
+                  border: '1px solid #3c4a43',
+                  borderRadius: '4px',
+                  color: '#d4f07d',
+                  fontSize: '0.72rem',
+                  padding: '2px 6px',
+                  cursor: 'pointer'
+                }}
+                onClick={() => {
+                  if (tokenStats?.contract_address) {
+                    navigator.clipboard.writeText(tokenStats.contract_address)
+                    setCopySuccess(true)
+                    setTimeout(() => setCopySuccess(false), 2000)
+                  }
+                }}
+                title="Copy full Contract Address"
+              >
+                {copySuccess ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
             <strong>{compactAddress(tokenStats?.contract_address ?? '')}</strong>
             <small>Burned {formatTokenAmount(tokenStats?.total_burned, tokenSymbol)}</small>
             <small>Paid {formatTokenAmount(tokenStats?.total_distributed, tokenSymbol)}</small>
@@ -863,6 +888,29 @@ export function App() {
 
         {activeTab === 'tokenomics' && protocolEnabled && (
           <div className="tokenomics-layout">
+            <section className="panel ca-card" style={{ marginBottom: '14px', background: '#0f1513', border: '1px solid #3c4a43', padding: '16px', borderRadius: '6px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                <div>
+                  <span style={{ color: '#a8b2a6', fontSize: '0.8rem', fontWeight: 700, textTransform: 'uppercase' }}>Token Contract Address (CA)</span>
+                  <div style={{ color: '#d4f07d', fontFamily: 'monospace', fontSize: '1.05rem', fontWeight: 'bold', marginTop: '4px', wordBreak: 'break-all' }}>
+                    {tokenStats?.contract_address}
+                  </div>
+                </div>
+                <button
+                  className="primary"
+                  style={{ background: '#d4f07d', color: '#18201d', border: 'none', padding: '8px 16px', fontWeight: 900, borderRadius: '4px', cursor: 'pointer' }}
+                  onClick={() => {
+                    if (tokenStats?.contract_address) {
+                      navigator.clipboard.writeText(tokenStats.contract_address)
+                      setCopySuccess(true)
+                      setTimeout(() => setCopySuccess(false), 2000)
+                    }
+                  }}
+                >
+                  {copySuccess ? 'Copied CA!' : 'Copy Contract Address'}
+                </button>
+              </div>
+            </section>
             <section className="metrics">
               <div>
                 <span>Total supply</span>

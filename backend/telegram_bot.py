@@ -19,6 +19,7 @@ ALLOWED_CHAT_IDS = {
 SPECIFIC_BOT_COMMANDS = {
     "/spreads",
     "/token",
+    "/ca",
     "/agent",
     "/steer",
     "/lineedge",
@@ -177,13 +178,21 @@ async def poll_telegram_updates() -> None:
                     if first_word in {"/start", "/help"} or first_word.startswith(("/start@", "/help@")):
                         reply = (
                             f"👋 Welcome! I am the sports & prediction market agent watching the board.\n\n"
+                            f"📌 Token CA:\n`EJWD6ZTMTE2NdQtwgcLcDFNecueuUhZMxx4WNGospump`\n\n"
                             f"Mention me (@{BOT_USERNAME}) or reply to my messages to ask about matchups, "
                             f"model edges, orderbook arbitrage, or agent reasoning.\n\n"
                             f"Commands:\n"
+                            f"• /ca - View token contract address\n"
                             f"• /spreads - View top model spread edges\n"
                             f"• /token - View buybacks, burns & holder dividend stats\n"
                             f"• /agent - Read AI agent market reasoning & bets\n"
                             f"• /steer - How to steer game lines"
+                        )
+                    elif first_word in {"/ca", "/token"} or first_word.startswith(("/ca@", "/token@")):
+                        reply = (
+                            f"📌 Token Contract Address (CA):\n"
+                            f"`EJWD6ZTMTE2NdQtwgcLcDFNecueuUhZMxx4WNGospump`\n\n"
+                            f"50% of agent wagers won are burned to reduce supply, and 50% are distributed to >1% token holders."
                         )
                     else:
                         reply = await ask_coveragedesk_agent(message, text)
