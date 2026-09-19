@@ -365,7 +365,7 @@ th {
 
 .breakdown-header {
   display: grid;
-  grid-template-columns: 48px minmax(180px, 1.1fr) minmax(220px, 1.25fr) minmax(160px, 0.8fr) minmax(220px, 1.15fr);
+  grid-template-columns: 48px minmax(170px, 1.1fr) minmax(120px, 0.7fr) minmax(210px, 1.25fr) minmax(80px, 0.5fr) minmax(120px, 0.7fr) minmax(90px, 0.55fr);
   gap: 14px;
   padding: 10px 16px;
   border-bottom: 1px solid #e8e4da;
@@ -376,9 +376,30 @@ th {
   text-transform: uppercase;
 }
 
+.breakdown-header button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.breakdown-header button:hover,
+.breakdown-header button.active {
+  color: #1b1e23;
+}
+
+.breakdown-header button span {
+  display: block;
+  margin-top: 2px;
+  color: #7a827d;
+  font-size: 0.66rem;
+}
+
 .breakdown-row {
   display: grid;
-  grid-template-columns: 48px minmax(180px, 1.1fr) minmax(220px, 1.25fr) minmax(160px, 0.8fr) minmax(220px, 1.15fr);
+  grid-template-columns: 48px minmax(170px, 1.1fr) minmax(120px, 0.7fr) minmax(210px, 1.25fr) minmax(80px, 0.5fr) minmax(120px, 0.7fr) minmax(90px, 0.55fr);
   gap: 14px;
   align-items: center;
   width: 100%;
@@ -403,7 +424,10 @@ th {
 .breakdown-row small,
 .line-copy,
 .row-game,
+.row-date,
 .row-market,
+.row-gap,
+.row-confidence,
 .row-odds {
   display: block;
   min-width: 0;
@@ -411,6 +435,8 @@ th {
 
 .breakdown-row small,
 .line-copy,
+.row-date strong,
+.row-date small,
 .row-market strong,
 .row-odds strong,
 .row-odds small {
@@ -420,15 +446,22 @@ th {
   white-space: nowrap;
 }
 
+.row-date strong,
 .row-market strong,
+.row-gap strong,
 .row-odds strong {
   color: #1b1e23;
 }
 
+.row-date small,
 .row-market small,
 .row-odds small {
   display: block;
   margin-top: 4px;
+}
+
+.row-gap strong {
+  font-size: 1.05rem;
 }
 
 .mobile-label {
@@ -437,28 +470,6 @@ th {
   font-size: 0.72rem;
   font-weight: 900;
   text-transform: uppercase;
-}
-
-.row-signals {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  min-width: 0;
-}
-
-.row-signals span:first-child {
-  display: grid;
-  gap: 2px;
-}
-
-.row-signals b {
-  color: #656b68;
-  font-size: 0.72rem;
-  text-transform: uppercase;
-}
-
-.row-signals strong {
-  font-size: 1.05rem;
 }
 
 .confidence {
@@ -774,14 +785,19 @@ pre {
   }
 
   .row-game,
+  .row-date,
   .row-market,
-  .row-signals,
+  .row-gap,
+  .row-confidence,
   .row-odds,
   .breakdown-row .line-copy {
     grid-column: 2;
   }
 
+  .row-date,
   .row-market,
+  .row-gap,
+  .row-confidence,
   .row-odds {
     display: grid;
     gap: 3px;
@@ -793,6 +809,8 @@ pre {
   }
 
   .row-market strong,
+  .row-date strong,
+  .row-date small,
   .row-odds strong,
   .row-odds small,
   .breakdown-row small,
@@ -800,8 +818,9 @@ pre {
     white-space: normal;
   }
 
-  .row-signals {
-    justify-content: space-between;
+  .row-gap,
+  .row-confidence,
+  .row-odds {
     border-top: 1px solid #efede7;
     padding-top: 10px;
   }

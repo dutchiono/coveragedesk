@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 
 type SportLabel = 'ALL' | 'NFL' | 'NCAAF'
+type SortDirection = 'asc' | 'desc'
+type SortKey = 'edge' | 'game' | 'date' | 'line' | 'gap' | 'confidence' | 'odds' | 'move'
 const REFRESH_MS = 5 * 60 * 1000
 
 type BoardRow = {
@@ -186,6 +188,31 @@ function consensusLabel(row: BoardRow) {
   return 'Pick'
 }
 
+function lineValue(row: BoardRow) {
+  return row.market.consensus_spread
+}
+
+function dateValue(value: string | null) {
+  if (!value) return null
+  const time = new Date(value).getTime()
+  return Number.isFinite(time) ? time : null
+}
+
+function compareText(a: string, b: string, direction: SortDirection) {
+  const result = a.localeCompare(b, undefined, { sensitivity: 'base' })
+  return direction === 'asc' ? result : -result
+}
+
+function compareNumber(a: number | null | undefined, b: number | null | undefined, direction: SortDirection) {
+  const aValid = a !== null && a !== undefined && Number.isFinite(a)
+  const bValid = b !== null && b !== undefined && Number.isFinite(b)
+  if (!aValid && !bValid) return 0
+  if (!aValid) return 1
+  if (!bValid) return -1
+  const result = a - b
+  return direction === 'asc' ? result : -result
+}
+
 async function fetchBoard(): Promise<BoardResponse> {
   try {
     const response = await fetch('/api/board', { cache: 'no-store' })
@@ -201,7 +228,8 @@ async function fetchBoard(): Promise<BoardResponse> {
 function App() {
   const [board, setBoard] = useState<BoardResponse>(emptyBoard)
   const [selectedSport, setSelectedSport] = useState<SportLabel>('ALL')
-  const [sortMode, setSortMode] = useState('cover')
+  const [sortKey, setSortKey] = useState<SortKey>('edge')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [selectedGameId, setSelectedGameId] = useState('')
   const [teamSearch, setTeamSearch] = useState('')
   const [refreshing, setRefreshing] = useState(false)
@@ -238,13 +266,27 @@ function App() {
         )
       : sportRows
     return [...searchedRows].sort((a, b) => {
-      if (sortMode === 'cover') return (b.edge_score ?? 0) - (a.edge_score ?? 0)
-      if (sortMode === 'move') {
-        return Math.abs(b.metrics.line_move ?? 0) - Math.abs(a.metrics.line_move ?? 0)
+      let result = 0
+      if (sortKey === 'game') {
+        result = compareText(`${a.away_team} ${a.home_team}`, `${b.away_team} ${b.home_team}`, sortDirection)
+      } else if (sortKey === 'date') {
+        result = compareNumber(dateValue(a.commence_time), dateValue(b.commence_time), sortDirection)
+      } else if (sortKey === 'line') {
+        result = compareNumber(lineValue(a), lineValue(b), sortDirection)
+      } else if (sortKey === 'gap') {
+        result = compareNumber(modelGap(a), modelGap(b), sortDirection)
+      } else if (sortKey === 'confidence') {
+        result = compareNumber(a.metrics.confidence_score, b.metrics.confidence_score, sortDirection)
+      } else if (sortKey === 'odds') {
+        result = compareNumber(coverOdds(a), coverOdds(b), sortDirection)
+      } else if (sortKey === 'move') {
+        result = compareNumber(a.metrics.line_move, b.metrics.line_move, sortDirection)
+      } else {
+        result = compareNumber(a.edge_score, b.edge_score, sortDirection)
       }
-      return Math.abs(modelGap(b) ?? 0) - Math.abs(modelGap(a) ?? 0)
+      return result || compareNumber(a.edge_score, b.edge_score, 'desc')
     })
-  }, [board.rows, selectedSport, sortMode, teamSearch])
+  }, [board.rows, selectedSport, sortDirection, sortKey, teamSearch])
 
   const selectedRow = rows.find((row) => row.game_id === selectedGameId) ?? rows[0] ?? null
   const topGap = rows.reduce<number | null>((largest, row) => {
@@ -257,6 +299,20 @@ function App() {
     return new Date(row.updated_at) > new Date(latest) ? row.updated_at : latest
   }, null)
   const liveLabel = board.source === 'kalshi' ? 'Kalshi live' : board.source === 'preview' ? 'Preview feed' : 'Live feed'
+
+  function toggleSort(nextKey: SortKey) {
+    if (nextKey === sortKey) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
+      return
+    }
+    setSortKey(nextKey)
+    setSortDirection(nextKey === 'game' || nextKey === 'date' || nextKey === 'line' ? 'asc' : 'desc')
+  }
+
+  function sortLabel(key: SortKey) {
+    if (key !== sortKey) return ''
+    return sortDirection === 'asc' ? ' asc' : ' desc'
+  }
 
   return (
     <main className="shell">
@@ -294,15 +350,6 @@ function App() {
             ))}
           </div>
         </div>
-
-        <label className="field">
-          <span>Rank by</span>
-          <select value={sortMode} onChange={(event) => setSortMode(event.target.value)}>
-            <option value="cover">Best gap / odds</option>
-            <option value="gap">Model gap</option>
-            <option value="move">Price move</option>
-          </select>
-        </label>
 
         <div className="data-source">
           <span>Live feed</span>
@@ -401,12 +448,28 @@ function App() {
             </div>
           </div>
 
-          <div className="breakdown-header" aria-hidden="true">
-            <span>#</span>
-            <span>Game</span>
-            <span>Line</span>
-            <span>Gap / confidence</span>
-            <span>Odds</span>
+          <div className="breakdown-header">
+            <button className={sortKey === 'edge' ? 'active' : ''} onClick={() => toggleSort('edge')} type="button">
+              #<span>{sortLabel('edge')}</span>
+            </button>
+            <button className={sortKey === 'game' ? 'active' : ''} onClick={() => toggleSort('game')} type="button">
+              Game<span>{sortLabel('game')}</span>
+            </button>
+            <button className={sortKey === 'date' ? 'active' : ''} onClick={() => toggleSort('date')} type="button">
+              Date<span>{sortLabel('date')}</span>
+            </button>
+            <button className={sortKey === 'line' ? 'active' : ''} onClick={() => toggleSort('line')} type="button">
+              Line<span>{sortLabel('line')}</span>
+            </button>
+            <button className={sortKey === 'gap' ? 'active' : ''} onClick={() => toggleSort('gap')} type="button">
+              Gap<span>{sortLabel('gap')}</span>
+            </button>
+            <button className={sortKey === 'confidence' ? 'active' : ''} onClick={() => toggleSort('confidence')} type="button">
+              Confidence<span>{sortLabel('confidence')}</span>
+            </button>
+            <button className={sortKey === 'odds' ? 'active' : ''} onClick={() => toggleSort('odds')} type="button">
+              Odds<span>{sortLabel('odds')}</span>
+            </button>
           </div>
 
           <div className="breakdown-list">
@@ -424,19 +487,25 @@ function App() {
                       {row.away_team} vs {row.home_team}
                     </strong>
                     <small>
-                      {row.sport} / {marketTypeLabel(row)} / {formatDate(row.commence_time)}
+                      {row.sport} / {marketTypeLabel(row)}
                     </small>
+                  </span>
+                  <span className="row-date">
+                    <span className="mobile-label">Date</span>
+                    <strong>{formatDate(row.commence_time)}</strong>
+                    <small>{row.sport}</small>
                   </span>
                   <span className="row-market">
                     <span className="mobile-label">Line</span>
                     <strong>{consensusLabel(row)}</strong>
                     <small>{row.bluechip?.model_line ? `Model ${row.bluechip.model_line}` : 'Model gap unavailable'}</small>
                   </span>
-                  <span className="row-signals">
-                    <span>
-                      <b>Gap</b>
-                      <strong>{formatSigned(modelGap(row))}</strong>
-                    </span>
+                  <span className="row-gap">
+                    <span className="mobile-label">Gap</span>
+                    <strong>{formatSigned(modelGap(row))}</strong>
+                  </span>
+                  <span className="row-confidence">
+                    <span className="mobile-label">Confidence</span>
                     <span className={`confidence ${confidenceClass(row.metrics.confidence_score)}`}>
                       {confidenceLabel(row.metrics.confidence_score)}
                     </span>
