@@ -5,6 +5,7 @@ type Page = 'board' | 'detail' | 'status'
 
 type BoardRow = {
   game_id: string
+  data_source?: 'sportsbook' | 'kalshi'
   sport: 'NFL' | 'NCAAF'
   commence_time: string
   away_team: string
@@ -23,6 +24,22 @@ type BoardRow = {
     source: string | null
     updated_at: string | null
   }
+  contract?: {
+    ticker: string
+    title: string
+    side_label: string | null
+    yes_bid: number | null
+    yes_ask: number | null
+    no_bid: number | null
+    no_ask: number | null
+    last_price: number | null
+    previous_price: number | null
+    price_move: number | null
+    volume: number
+    volume_24h: number
+    open_interest: number
+    status: string | null
+  }
   metrics: {
     model_market_gap: number | null
     line_move: number | null
@@ -33,7 +50,7 @@ type BoardRow = {
 
 type BoardResponse = {
   generated_at: string
-  source: 'live' | 'preview'
+  source: 'sportsbook' | 'kalshi' | 'live' | 'preview'
   status: string
   rows: BoardRow[]
 }
@@ -59,6 +76,15 @@ function formatNumber(value: number | null, digits = 1) {
   return value === null || !Number.isFinite(value) ? '-' : value.toFixed(digits)
 }
 
+function formatCents(value: number | null) {
+  return value === null || !Number.isFinite(value) ? '-' : `${Math.round(value * 100)}c`
+}
+
+function formatVolume(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '-'
+  return value >= 1000 ? value.toLocaleString(undefined, { maximumFractionDigits: 0 }) : value.toFixed(0)
+}
+
 function confidenceLabel(score: number) {
   if (score >= 84) return 'Strong'
   if (score >= 72) return 'Good'
@@ -67,6 +93,11 @@ function confidenceLabel(score: number) {
 }
 
 function consensusLabel(row: BoardRow) {
+  if (row.data_source === 'kalshi' && row.contract) {
+    const strike = row.market.consensus_spread
+    const spread = strike === null ? '' : ` > ${formatNumber(strike)}`
+    return `${row.contract.side_label ?? row.contract.title}${spread}`
+  }
   const spread = row.market.consensus_spread
   if (spread === null) return '-'
   if (spread < 0) return `${row.home_team} ${spread.toFixed(1)}`
@@ -90,7 +121,7 @@ function App() {
   const [board, setBoard] = useState<BoardResponse>(emptyBoard)
   const [activePage, setActivePage] = useState<Page>('board')
   const [selectedSport, setSelectedSport] = useState<SportLabel>('ALL')
-  const [sortMode, setSortMode] = useState('gap')
+  const [sortMode, setSortMode] = useState('volume')
   const [selectedGameId, setSelectedGameId] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -111,13 +142,18 @@ function App() {
       if (sortMode === 'move') {
         return Math.abs(b.metrics.line_move ?? 0) - Math.abs(a.metrics.line_move ?? 0)
       }
+      if (sortMode === 'volume') return (b.contract?.volume_24h ?? 0) - (a.contract?.volume_24h ?? 0)
+      if (sortMode === 'interest') return (b.contract?.open_interest ?? 0) - (a.contract?.open_interest ?? 0)
       if (sortMode === 'books') return b.market.book_count - a.market.book_count
       return Math.abs(b.metrics.model_market_gap ?? 0) - Math.abs(a.metrics.model_market_gap ?? 0)
     })
   }, [board.rows, selectedSport, sortMode])
 
   const selectedRow = rows.find((row) => row.game_id === selectedGameId) ?? rows[0] ?? null
-  const topGap = rows.find((row) => row.metrics.model_market_gap !== null)?.metrics.model_market_gap ?? null
+  const topGap =
+    rows.find((row) => row.metrics.model_market_gap !== null)?.metrics.model_market_gap ??
+    rows.find((row) => row.contract?.price_move !== null)?.contract?.price_move ??
+    null
   const latestUpdate = rows.reduce<string | null>((latest, row) => {
     if (!latest) return row.updated_at
     return new Date(row.updated_at) > new Date(latest) ? row.updated_at : latest
@@ -167,15 +203,17 @@ function App() {
           <span>Rank by</span>
           <select value={sortMode} onChange={(event) => setSortMode(event.target.value)}>
             <option value="gap">Model gap</option>
-            <option value="move">Line move</option>
+            <option value="move">Price move</option>
+            <option value="volume">24h volume</option>
+            <option value="interest">Open interest</option>
             <option value="books">Book count</option>
           </select>
         </label>
 
         <div className="data-source">
           <span>Odds backend</span>
-          <strong>{board.source === 'live' ? 'Live odds' : 'Preview'}</strong>
-          <small>{rows.length} games</small>
+          <strong>{board.source === 'kalshi' ? 'Kalshi live' : board.source === 'preview' ? 'Preview' : 'Live odds'}</strong>
+          <small>{rows.length} markets</small>
           <em>{board.status}</em>
         </div>
 
@@ -187,19 +225,19 @@ function App() {
       <section className="content">
         <div className="topbar">
           <div>
-            <p className="eyebrow">Backend-ranked sportsbook markets</p>
-            <h2>Consensus lines, movement, and model gaps</h2>
+            <p className="eyebrow">Backend-ranked live markets</p>
+            <h2>Football lines, contract prices, and market movement</h2>
           </div>
-          <div className="status">{board.source === 'live' ? 'API connected' : 'Preview mode'}</div>
+          <div className="status">{board.source === 'preview' ? 'Preview mode' : 'API connected'}</div>
         </div>
 
         <section className="metrics" aria-label="Summary">
           <div>
-            <span>Games</span>
+            <span>Markets</span>
             <strong>{rows.length.toLocaleString()}</strong>
           </div>
           <div>
-            <span>Largest gap</span>
+            <span>Largest move</span>
             <strong>{formatNumber(topGap)}</strong>
           </div>
           <div>
@@ -217,7 +255,7 @@ function App() {
             <div className="panel-heading">
               <div>
                 <h3>Odds board</h3>
-                <p>The backend pulls odds, stores line snapshots, and sends this precomputed board.</p>
+                <p>The backend pulls live markets and sends this precomputed board.</p>
               </div>
             </div>
 
@@ -226,12 +264,13 @@ function App() {
                 <thead>
                   <tr>
                     <th>Kickoff</th>
-                    <th>Game</th>
-                    <th>Consensus</th>
-                    <th>Fair spread</th>
-                    <th>Gap</th>
+                    <th>Market</th>
+                    <th>Contract</th>
+                    <th>Yes bid</th>
+                    <th>Yes ask</th>
                     <th>Move</th>
-                    <th>Books</th>
+                    <th>24h vol.</th>
+                    <th>Open int.</th>
                     <th>Timestamp</th>
                     <th>Conf.</th>
                   </tr>
@@ -249,14 +288,17 @@ function App() {
                       >
                         <td>{formatDate(row.commence_time)}</td>
                         <td>
-                          <span className="game">{row.away_team}</span>
-                          <span className="muted">at {row.home_team}</span>
+                          <span className="game">
+                            {row.away_team} vs {row.home_team}
+                          </span>
+                          <span className="muted">{row.sport}</span>
                         </td>
                         <td>{consensusLabel(row)}</td>
-                        <td>{formatNumber(row.model.fair_spread)}</td>
-                        <td>{formatNumber(row.metrics.model_market_gap)}</td>
+                        <td>{formatCents(row.contract?.yes_bid ?? null)}</td>
+                        <td>{formatCents(row.contract?.yes_ask ?? null)}</td>
                         <td>{formatNumber(row.metrics.line_move)}</td>
-                        <td>{row.market.book_count}</td>
+                        <td>{formatVolume(row.contract?.volume_24h)}</td>
+                        <td>{formatVolume(row.contract?.open_interest)}</td>
                         <td>{formatDate(row.market.latest_timestamp)}</td>
                         <td>
                           <span className={`badge ${confidenceLabel(row.metrics.confidence_score).toLowerCase()}`}>
@@ -268,7 +310,7 @@ function App() {
                   ) : (
                     <tr>
                       <td className="empty" colSpan={9}>
-                        No odds are available yet. Set `ODDS_API_KEY` on the backend and refresh.
+                        No live markets are available yet. Refresh in a minute.
                       </td>
                     </tr>
                   )}
@@ -284,33 +326,30 @@ function App() {
               <>
                 <div className="detail-main">
                   <p className="eyebrow">{selectedRow.sport}</p>
-                  <h3>
-                    {selectedRow.away_team} at {selectedRow.home_team}
-                  </h3>
+                  <h3>{selectedRow.contract?.title ?? `${selectedRow.away_team} at ${selectedRow.home_team}`}</h3>
                   <div className="line-chart" aria-label="Opening to current line">
-                    <span>Open {formatNumber(selectedRow.market.opening_spread)}</span>
-                    <strong>Consensus {formatNumber(selectedRow.market.consensus_spread)}</strong>
+                    <span>Prev {formatCents(selectedRow.contract?.previous_price ?? selectedRow.market.opening_spread)}</span>
+                    <strong>Last {formatCents(selectedRow.contract?.last_price ?? selectedRow.market.consensus_spread)}</strong>
                     <span>Move {formatNumber(selectedRow.metrics.line_move)}</span>
                   </div>
                 </div>
                 <div className="detail-stack">
                   <div>
-                    <span>Specific-book timestamp</span>
+                    <span>Market source</span>
                     <strong>{selectedRow.market.latest_book ?? '-'}</strong>
                     <small>{formatDate(selectedRow.market.latest_timestamp)}</small>
                   </div>
                   <div>
-                    <span>Best available</span>
+                    <span>Bid / ask</span>
                     <strong>
-                      {formatNumber(selectedRow.market.best_favorite_line)} /{' '}
-                      {formatNumber(selectedRow.market.best_underdog_line)}
+                      {formatCents(selectedRow.contract?.yes_bid ?? null)} / {formatCents(selectedRow.contract?.yes_ask ?? null)}
                     </strong>
-                    <small>Favorite / underdog line</small>
+                    <small>YES side</small>
                   </div>
                   <div>
-                    <span>Model source</span>
-                    <strong>{selectedRow.model.source ?? 'none'}</strong>
-                    <small>{formatDate(selectedRow.model.updated_at)}</small>
+                    <span>Activity</span>
+                    <strong>{formatVolume(selectedRow.contract?.volume_24h)}</strong>
+                    <small>24h volume, {formatVolume(selectedRow.contract?.open_interest)} open interest</small>
                   </div>
                   <div>
                     <span>Reliability</span>
@@ -334,8 +373,8 @@ function App() {
             <div className="performance-card">
               <h3>Data contract</h3>
               <p>
-                `/api/board` returns sportsbook consensus, best available lines, line movement,
-                and optional model-vs-market gaps. The browser does not calculate odds.
+                `/api/board` returns backend-ranked rows from sportsbook snapshots when configured,
+                otherwise live read-only Kalshi football spread markets. The browser does not calculate odds.
               </p>
             </div>
           </section>

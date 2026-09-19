@@ -12,6 +12,8 @@ from fastapi import FastAPI
 
 API_URL = "https://api.the-odds-api.com/v4/sports/{sport}/odds"
 SPORTS = {"NFL": "americanfootball_nfl", "NCAAF": "americanfootball_ncaaf"}
+KALSHI_API_URL = "https://external-api.kalshi.com/trade-api/v2"
+KALSHI_SPREAD_SERIES = {"NFL": "KXNFLSPREAD", "NCAAF": "KXNCAAFSPREAD"}
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("MARKBETS_DB", ROOT / "data" / "markbets.sqlite3"))
 PROJECTIONS_PATH = Path(os.getenv("MARKBETS_PROJECTIONS", ROOT / "data" / "projections.csv"))
@@ -65,6 +67,30 @@ def american_to_probability(odds: int | None) -> float | None:
   if odds is None:
     return None
   return 100 / (odds + 100) if odds > 0 else -odds / (-odds + 100)
+
+
+def dollars_to_float(value: Any) -> float | None:
+  if value in (None, ""):
+    return None
+  try:
+    return float(value)
+  except (TypeError, ValueError):
+    return None
+
+
+def fp_to_float(value: Any) -> float:
+  parsed = dollars_to_float(value)
+  return parsed if parsed is not None else 0
+
+
+def extract_matchup(market: dict[str, Any]) -> tuple[str, str]:
+  rules = market.get("rules_primary") or ""
+  match = re.search(r"in the (.+?) vs (.+?) (?:college football|Pro Football)", rules)
+  if match:
+    return match.group(1), match.group(2)
+  title = (market.get("title") or "").replace("?", "")
+  team = title.split(" wins", 1)[0] or market.get("yes_sub_title") or "Kalshi"
+  return team, "Market"
 
 
 def load_projections() -> dict[str, dict[str, Any]]:
@@ -126,6 +152,87 @@ async def fetch_odds() -> tuple[list[dict[str, Any]], str]:
               }
             )
   return rows, f"Fetched {len(rows)} sportsbook lines"
+
+
+async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
+  limit = int(os.getenv("KALSHI_MARKET_LIMIT", "100"))
+  captured_at = now_iso()
+  board: list[dict[str, Any]] = []
+  async with httpx.AsyncClient(timeout=25) as client:
+    for sport_name, series_ticker in KALSHI_SPREAD_SERIES.items():
+      response = await client.get(
+        f"{KALSHI_API_URL}/markets",
+        params={"series_ticker": series_ticker, "status": "open", "limit": limit},
+      )
+      response.raise_for_status()
+      for market in response.json().get("markets", []):
+        away_team, home_team = extract_matchup(market)
+        yes_bid = dollars_to_float(market.get("yes_bid_dollars"))
+        yes_ask = dollars_to_float(market.get("yes_ask_dollars"))
+        no_bid = dollars_to_float(market.get("no_bid_dollars"))
+        no_ask = dollars_to_float(market.get("no_ask_dollars"))
+        last_price = dollars_to_float(market.get("last_price_dollars"))
+        previous_price = dollars_to_float(market.get("previous_price_dollars"))
+        price_move = None
+        if last_price is not None and previous_price is not None and previous_price > 0:
+          price_move = round((last_price - previous_price) * 100, 1)
+
+        board.append(
+          {
+            "game_id": market["ticker"],
+            "data_source": "kalshi",
+            "sport": sport_name,
+            "commence_time": market.get("occurrence_datetime") or market.get("expected_expiration_time"),
+            "away_team": away_team,
+            "home_team": home_team,
+            "market": {
+              "consensus_spread": market.get("floor_strike"),
+              "best_favorite_line": yes_bid,
+              "best_underdog_line": yes_ask,
+              "opening_spread": previous_price,
+              "book_count": 1,
+              "latest_book": "Kalshi",
+              "latest_timestamp": market.get("updated_time") or captured_at,
+            },
+            "contract": {
+              "ticker": market["ticker"],
+              "title": (market.get("title") or "").replace("?", ""),
+              "side_label": market.get("yes_sub_title") or market.get("title"),
+              "yes_bid": yes_bid,
+              "yes_ask": yes_ask,
+              "no_bid": no_bid,
+              "no_ask": no_ask,
+              "last_price": last_price,
+              "previous_price": previous_price,
+              "price_move": price_move,
+              "volume": fp_to_float(market.get("volume_fp")),
+              "volume_24h": fp_to_float(market.get("volume_24h_fp")),
+              "open_interest": fp_to_float(market.get("open_interest_fp")),
+              "status": market.get("status"),
+            },
+            "model": {
+              "fair_spread": None,
+              "source": None,
+              "updated_at": None,
+            },
+            "metrics": {
+              "model_market_gap": None,
+              "line_move": price_move,
+              "confidence_score": min(96, 56 + int(fp_to_float(market.get("volume_24h_fp")) > 0) * 12 + int(fp_to_float(market.get("open_interest_fp")) > 0) * 12),
+            },
+            "updated_at": market.get("updated_time") or captured_at,
+          }
+        )
+
+  return sorted(
+    board,
+    key=lambda row: (
+      row["contract"]["volume_24h"],
+      row["contract"]["open_interest"],
+      abs(row["contract"]["price_move"] or 0),
+    ),
+    reverse=True,
+  ), f"Fetched {len(board)} Kalshi football spread contracts"
 
 
 def store_snapshots(rows: list[dict[str, Any]]) -> None:
@@ -213,6 +320,7 @@ def build_board() -> list[dict[str, Any]]:
       board.append(
         {
           "game_id": game_id,
+          "data_source": "sportsbook",
           "sport": sample["sport"],
           "commence_time": sample["commence_time"],
           "away_team": away_team,
@@ -249,7 +357,12 @@ def build_board() -> list[dict[str, Any]]:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-  return {"ok": True, "generated_at": now_iso(), "odds_api_configured": bool(os.getenv("ODDS_API_KEY"))}
+  return {
+    "ok": True,
+    "generated_at": now_iso(),
+    "odds_api_configured": bool(os.getenv("ODDS_API_KEY")),
+    "kalshi_public_data": True,
+  }
 
 
 @app.get("/api/board")
@@ -261,9 +374,19 @@ async def board() -> dict[str, Any]:
   except Exception as exc:
     status = f"Odds refresh failed; using stored snapshots: {exc}"
 
+  rows = build_board()
+  source = "sportsbook"
+  if not rows:
+    try:
+      rows, status = await fetch_kalshi_board()
+      source = "kalshi"
+    except Exception as exc:
+      status = f"Kalshi refresh failed and no sportsbook snapshots are stored: {exc}"
+      source = "live"
+
   return {
     "generated_at": now_iso(),
-    "source": "live",
+    "source": source,
     "status": status,
-    "rows": build_board(),
+    "rows": rows,
   }
