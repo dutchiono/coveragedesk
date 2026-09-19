@@ -365,6 +365,7 @@ export function App() {
   const [steerMinEdge, setSteerMinEdge] = useState(1.5)
   const [steerDirective, setSteerDirective] = useState('')
   const [steerMessage, setSteerMessage] = useState<string | null>(null)
+  const [legalModal, setLegalModal] = useState<'tos' | 'privacy' | 'risk' | null>(null)
 
   async function loadData(showRefreshing = true) {
     if (showRefreshing) setRefreshing(true)
@@ -913,6 +914,115 @@ export function App() {
           </div>
         )}
       </section>
+
+      <footer className="site-footer">
+        <div className="footer-main">
+          <div className="footer-brand">
+            <h4>Coverage Desk</h4>
+            <p>Autonomous AI sports spread agent, tokenomics ledger, and holder steering engine for crypto sports prediction markets.</p>
+            <div className="social-nav-links">
+              <a href="https://x.com/coveragedesk_" target="_blank" rel="noopener noreferrer">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                </svg>
+                X / Twitter
+              </a>
+              <a href="https://t.me/coveragedesk" target="_blank" rel="noopener noreferrer">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/>
+                </svg>
+                Telegram
+              </a>
+            </div>
+          </div>
+          <div className="footer-col">
+            <h5>Navigation</h5>
+            <div className="footer-links">
+              <a href="#lines">Spread Lines</a>
+              <a href="#tokenomics">Tokenomics & Holders</a>
+              <a href="#steering">Holder Steering</a>
+            </div>
+          </div>
+          <div className="footer-col">
+            <h5>Legal & Risk</h5>
+            <div className="footer-links">
+              <button type="button" onClick={() => setLegalModal('tos')}>Terms of Service</button>
+              <button type="button" onClick={() => setLegalModal('privacy')}>Privacy Policy</button>
+              <button type="button" onClick={() => setLegalModal('risk')}>Risk Disclosure</button>
+            </div>
+          </div>
+          <div className="footer-col">
+            <h5>Token</h5>
+            <div className="footer-links">
+              <span>Token Name: <strong>Coverage</strong></span>
+              <span>Ticker: <strong>$CVR</strong></span>
+              <span>Burn Pool: <strong>50%</strong> Net Profit</span>
+              <span>Dividends: <strong>50%</strong> to &gt;1% Holders</span>
+            </div>
+          </div>
+        </div>
+        <div className="footer-bottom">
+          <span>&copy; {new Date().getFullYear()} Coverage Desk. All rights reserved.</span>
+          <span>Powered by CoverageDesk Agent Engine</span>
+        </div>
+      </footer>
+
+      {legalModal && (
+        <div className="dialog-backdrop" onClick={() => setLegalModal(null)}>
+          <div className="dialog-card legal-dialog-card" onClick={(e) => e.stopPropagation()}>
+            <header className="dialog-header">
+              <div>
+                <h3>
+                  {legalModal === 'tos' && 'Terms of Service'}
+                  {legalModal === 'privacy' && 'Privacy Policy'}
+                  {legalModal === 'risk' && 'Risk Disclosure & Disclaimer'}
+                </h3>
+                <p>Coverage Desk Protocol Legal Guidelines</p>
+              </div>
+              <button className="icon-button" type="button" onClick={() => setLegalModal(null)}>✕</button>
+            </header>
+            <div className="dialog-body legal-content">
+              {legalModal === 'tos' && (
+                <>
+                  <h4>1. Acceptance of Terms</h4>
+                  <p>By accessing or using Coverage Desk (coveragedesk.online), you agree to be bound by these Terms of Service. If you do not agree, do not access or use the platform.</p>
+                  <h4>2. Experimental AI & Prediction Markets</h4>
+                  <p>Coverage Desk operates an autonomous AI decision agent that tracks sports spreads and prediction market pricing. All analytics, ratings, models, and automated transactions are provided on an experimental basis for informational and steering purposes.</p>
+                  <h4>3. Tokenomics ($CVR) & Holder Steering</h4>
+                  <p>$CVR utility tokens allow holders with &ge;0.5% supply to participate in line-weighting steering by burning tokens. 50% of simulated net agent profits are directed to automatic token buyback & burn, and 50% are distributed to qualified holders (&gt;1% supply).</p>
+                  <h4>4. No Financial Advice</h4>
+                  <p>Content, models, and predictions produced by Coverage Desk do not constitute financial, investment, or gambling advice. Always conduct your own research.</p>
+                </>
+              )}
+
+              {legalModal === 'privacy' && (
+                <>
+                  <h4>1. Data Collection</h4>
+                  <p>Coverage Desk does not collect personally identifiable information (PII). We do not require accounts, email addresses, or passwords.</p>
+                  <h4>2. Blockchain & Wallet Data</h4>
+                  <p>Public wallet addresses provided during holder steering or dividend verification are stored in public/on-chain ledgers and indexed by the backend for tokenomics calculations.</p>
+                  <h4>3. Analytics & Local Storage</h4>
+                  <p>Minimal local storage may be utilized by your web browser to save user UI preferences and current filter selections.</p>
+                </>
+              )}
+
+              {legalModal === 'risk' && (
+                <>
+                  <h4>1. Cryptocurrency Risk</h4>
+                  <p>Digital assets, including $CVR, carry significant price volatility and risk of total loss. Crypto tokens are not insured by any government entity.</p>
+                  <h4>2. Autonomous Agent Risk</h4>
+                  <p>The AI betting engine relies on automated scrapers, models, and algorithms. Model predictions can be inaccurate, incomplete, or delayed due to market conditions or data provider outages.</p>
+                  <h4>3. Regulatory Compliance</h4>
+                  <p>Users are responsible for ensuring that participating in prediction market tools, token steering, or sports analytics complies with local laws in their jurisdiction.</p>
+                </>
+              )}
+            </div>
+            <footer className="dialog-actions">
+              <button className="primary" type="button" onClick={() => setLegalModal(null)}>Close</button>
+            </footer>
+          </div>
+        </div>
+      )}
     </main>
   )
 }
