@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-TOTAL_SUPPLY = 1_000_000_000.0  # 1 Billion $CVR
+TOTAL_SUPPLY = 1_000_000_000.0  # 1 Billion $LINE
 
 
 def now_iso() -> str:
@@ -13,7 +13,7 @@ def now_iso() -> str:
 
 def generate_thought_and_bet(board_row: dict[str, Any], steering_weights: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """
-    Evaluates a game row from CoverageDesk board using model gaps, weather,
+    Evaluates a game row from LineEdge board using model gaps, weather,
     and holder steering weights to produce an agent thought process and optional bet.
     """
     away_team = board_row.get("away_team", "Away")
@@ -63,15 +63,16 @@ def generate_thought_and_bet(board_row: dict[str, Any], steering_weights: dict[s
 
     if not execution_enabled:
         thought_parts.append(
-            "DECISION: READ ONLY. No token contract/bankroll is configured, so CoverageDesk records the market read without executing a wager."
+            "DECISION: READ ONLY. No token contract/bankroll is configured, so LineEdge records the market read without executing a wager."
         )
         bet_obj = None
     elif should_place_bet:
         side_label = f"{away_team} {consensus_spread}"
         stake = round(random.uniform(500, 2500), 2)
         thought_parts.append(
-            f"DECISION: QUALIFIED BET FOUND. Confidence score {confidence*100:.1f}%. Placing automated bet on {side_label} for {stake:,.0f} $CVR bankroll stake."
+            f"DECISION: QUALIFIED BET FOUND. Confidence score {confidence*100:.1f}%. Placing automated bet on {side_label} for {stake:,.0f} $LINE bankroll stake."
         )
+
         bet_obj = {
             "id": f"bet_{uuid.uuid4().hex[:10]}",
             "game_id": board_row.get("game_id", f"{away_team}_{home_team}"),

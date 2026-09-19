@@ -30,7 +30,7 @@ def should_answer(message: dict[str, Any], text: str) -> bool:
 
 def clean_user_text(text: str) -> str:
     cleaned = text.replace(f"@{BOT_USERNAME}", "").replace(f"@{BOT_USERNAME.upper()}", "")
-    return cleaned.strip() or "What is the current CoverageDesk read?"
+    return cleaned.strip() or "What is the current LineEdge read?"
 
 
 async def telegram(method: str, payload: dict[str, Any], timeout: float = 20.0) -> dict[str, Any]:
@@ -69,7 +69,7 @@ async def ask_coveragedesk_agent(message: dict[str, Any], text: str) -> str:
         response = await client.post(f"{API_BASE_URL}/api/agent/chat", json=payload)
         response.raise_for_status()
         data = response.json()
-    return data.get("reply") or "CoverageDesk did not return a reply."
+    return data.get("reply") or "LineEdge did not return a reply."
 
 
 async def poll_telegram_updates() -> None:
@@ -77,7 +77,7 @@ async def poll_telegram_updates() -> None:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
 
     offset = 0
-    print("CoverageDesk Telegram agent bridge started.")
+    print("LineEdge Telegram agent bridge started.")
 
     async with httpx.AsyncClient(timeout=70.0) as client:
         while True:
@@ -106,11 +106,12 @@ async def poll_telegram_updates() -> None:
 
                     if text.lower().startswith(("/start", "/help")):
                         reply = (
-                            "Talk to CoverageDesk here the same way you would talk to the site agent.\n\n"
+                            "Talk to LineEdge here the same way you would talk to the site agent.\n\n"
                             "Ask about a matchup, why a line is rated or unrated, what the latest agent read is, "
                             "or what changes once the token CA is configured. The agent uses the same backend board, "
                             "thought log, and execution state as coveragedesk.online."
                         )
+
                     else:
                         reply = await ask_coveragedesk_agent(message, text)
 

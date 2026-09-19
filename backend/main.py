@@ -42,7 +42,7 @@ COVERAGEDESK_TOKEN_CA = (
 ).strip()
 
 
-COVERAGEDESK_TOKEN_SYMBOL = os.getenv("COVERAGEDESK_TOKEN_SYMBOL", "$CVR").strip() or "$CVR"
+COVERAGEDESK_TOKEN_SYMBOL = os.getenv("COVERAGEDESK_TOKEN_SYMBOL", "$LINE").strip() or "$LINE"
 OPENCODE_API_KEY = os.getenv("OPENCODE_API_KEY", "").strip()
 OPENCODE_API_BASE_URL = os.getenv("OPENCODE_API_BASE_URL", "https://api.opencode.ai/v1").rstrip("/")
 OPENCODE_CHAT_MODEL = os.getenv("OPENCODE_CHAT_MODEL") or os.getenv("OPENCODE_MODEL") or "opencode/gpt-5.1-codex"
@@ -52,7 +52,8 @@ ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("COVERAGEDESK_DB", ROOT / "data" / "coveragedesk.sqlite3"))
 PROJECTIONS_PATH = Path(os.getenv("COVERAGEDESK_PROJECTIONS", ROOT / "data" / "projections.csv"))
 
-app = FastAPI(title="CoverageDesk API")
+app = FastAPI(title="LineEdge API")
+
 BLUECHIP_CACHE: dict[str, Any] = {"expires_at": 0.0, "games": {}}
 AGENT_TASK: asyncio.Task[None] | None = None
 
@@ -910,7 +911,7 @@ def recent_chat_prompt_lines(channel: str, chat_id: str, limit: int = 6) -> list
       (channel, chat_id, limit),
     ).fetchall()
   return [
-    f"{row['created_at']} | {row['user_name']}: {row['user_message']} | CoverageDesk: {row['assistant_message']}"
+    f"{row['created_at']} | {row['user_name']}: {row['user_message']} | LineEdge: {row['assistant_message']}"
     for row in reversed(rows)
   ]
 
@@ -955,8 +956,8 @@ def agent_system_prompt(context: dict[str, Any]) -> str:
     else "Execution is disabled because no token CA exists. Do not claim there is bankroll, steering, burns, payouts, or real bets."
   )
   return f"""
-You are CoverageDesk, the same sports-market agent whose read loop powers coveragedesk.online and Telegram.
-You are not a separate Telegram bot. Speak as the shared CoverageDesk agent watching the board.
+You are LineEdge, the same sports-market agent whose read loop powers coveragedesk.online and Telegram.
+You are not a separate Telegram bot. Speak as the shared LineEdge agent watching the board.
 
 Operating rules:
 - Use the live context below. Do not invent balances, contract addresses, bets, burns, payouts, model data, or weather.
@@ -973,7 +974,7 @@ Token/protocol state: {context["token_status"]}
 Top current board rows:
 {market_context}
 
-Recent CoverageDesk agent thoughts:
+Recent LineEdge agent thoughts:
 {thought_context}
 
 Recent chat with this Telegram thread:

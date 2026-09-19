@@ -238,10 +238,11 @@ function formatSigned(value: number | null | undefined, digits = 1): string {
   return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`
 }
 
-function formatCoverage(value: number | null | undefined, symbol = 'CVR'): string {
+function formatTokenAmount(value: number | null | undefined, symbol = 'LINE'): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-'
   return `${value.toLocaleString('en-US', { maximumFractionDigits: 0 })} ${symbol.replace(/^\$/, '')}`
 }
+
 
 function formatPercent(value: number | null | undefined, digits = 0): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-'
@@ -418,7 +419,7 @@ export function App() {
       }).then((r) => r.json())
 
       if (response.ok) {
-        setSteerMessage(`Burn accepted: ${formatCoverage(steerBurnTokens, tokenStats?.token_symbol ?? 'CVR')} committed to this market.`)
+        setSteerMessage(`Burn accepted: ${formatTokenAmount(steerBurnTokens, tokenStats?.token_symbol ?? 'LINE')} committed to this market.`)
         await loadData()
       } else {
         setSteerMessage(`Steering rejected: ${response.detail || 'holder is not qualified.'}`)
@@ -458,7 +459,7 @@ export function App() {
     return largest === null || gap > largest ? gap : largest
   }, null)
   const protocolEnabled = tokenStats?.enabled === true
-  const tokenSymbol = tokenStats?.token_symbol ?? 'CVR'
+  const tokenSymbol = tokenStats?.token_symbol ?? 'LINE'
   const modeledCount = rows.filter(isModeled).length
   const slateLabel = showAllGames ? 'All dates' : formatSlateKey(slateKey)
 
@@ -470,11 +471,11 @@ export function App() {
 
   return (
     <main className="shell">
-      <aside className="sidebar" aria-label="CoverageDesk controls">
+      <aside className="sidebar" aria-label="LineEdge controls">
         <div className="brand">
-          <span className="brand-mark">CD</span>
+          <span className="brand-mark">LE</span>
           <div>
-            <p>CoverageDesk</p>
+            <p>LineEdge</p>
             <h1>Spread Protocol</h1>
           </div>
         </div>
@@ -500,42 +501,37 @@ export function App() {
               <span>Team search</span>
               <input
                 onChange={(event) => setTeamSearch(event.target.value)}
-                placeholder="BYU, Texas, Notre Dame"
+                placeholder="Team name"
                 type="search"
                 value={teamSearch}
               />
             </label>
 
-            <div className="field">
-              <span>Sport</span>
-              <div className="segmented three">
-                {(['ALL', 'NFL', 'NCAAF'] as SportLabel[]).map((sport) => (
-                  <button
-                    className={selectedSport === sport ? 'selected' : ''}
-                    key={sport}
-                    onClick={() => setSelectedSport(sport)}
-                    type="button"
-                  >
-                    {sport}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <div className="field-group">
+              <label className="field">
+                <span>Sport filter</span>
+                <select onChange={(event) => setSelectedSport(event.target.value as SportLabel)} value={selectedSport}>
+                  <option value="ALL">All sports</option>
+                  <option value="NCAAF">NCAAF</option>
+                  <option value="NFL">NFL</option>
+                </select>
+              </label>
 
-            <label className="check-field">
-              <input
-                checked={showAllGames}
-                onChange={(event) => setShowAllGames(event.target.checked)}
-                type="checkbox"
-              />
-              <span>Show all dates</span>
-            </label>
+              <label className="checkbox-field">
+                <input
+                  checked={showAllGames}
+                  onChange={(event) => setShowAllGames(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>Include all dates</span>
+              </label>
+            </div>
           </>
         )}
 
-        <div className="feed-note">
-          <span>{refreshing ? 'Refreshing markets' : 'Auto refresh: 5 min'}</span>
-          <small>{rows.length.toLocaleString()} ranked markets</small>
+        <div className="side-meta">
+          <span>Feed status</span>
+          <strong>{refreshing ? 'Refreshing...' : 'Live'}</strong>
           <small>{slateLabel}</small>
           <small>{board.source === 'preview' ? 'Preview feed' : board.source === 'kalshi' ? 'Kalshi feed' : 'Sportsbook feed'}</small>
         </div>
@@ -544,8 +540,8 @@ export function App() {
           <div className="side-ledger">
             <span>{tokenSymbol} contract</span>
             <strong>{compactAddress(tokenStats?.contract_address ?? '')}</strong>
-            <small>Burned {formatCoverage(tokenStats?.total_burned, tokenSymbol)}</small>
-            <small>Paid {formatCoverage(tokenStats?.total_distributed, tokenSymbol)}</small>
+            <small>Burned {formatTokenAmount(tokenStats?.total_burned, tokenSymbol)}</small>
+            <small>Paid {formatTokenAmount(tokenStats?.total_distributed, tokenSymbol)}</small>
           </div>
         )}
       </aside>
@@ -563,7 +559,7 @@ export function App() {
             <p className="board-meta">
               {activeTab === 'board' && `${rows.length.toLocaleString()} markets | ${slateLabel} | ${modeledCount.toLocaleString()} modeled | Top gap ${formatSigned(topGap)} | Updated ${formatDate(board.generated_at)}`}
               {activeTab === 'agent' && `${openBets} open wagers | ${settledBets} settled | ${agentThoughts.length} market reads`}
-              {activeTab === 'tokenomics' && `${formatCoverage(tokenStats?.total_supply, tokenSymbol)} supply | ${formatPercent(tokenStats?.win_rate, 0)} win rate`}
+              {activeTab === 'tokenomics' && `${formatTokenAmount(tokenStats?.total_supply, tokenSymbol)} supply | ${formatPercent(tokenStats?.win_rate, 0)} win rate`}
               {activeTab === 'steering' && `${selectedRow ? `${selectedRow.away_team} at ${selectedRow.home_team}` : 'Select a market'} | ${tokenSymbol} enabled`}
             </p>
           </div>
@@ -759,7 +755,7 @@ export function App() {
               <div className="panel-heading compact">
                 <div>
                   <h3>{protocolEnabled ? 'Bet ledger' : 'Execution disabled'}</h3>
-                  <p>{protocolEnabled ? 'Settled wins split profit between burns and qualified holders.' : 'Add the token CA before CoverageDesk can track bankroll wagers, burns, or payouts.'}</p>
+                  <p>{protocolEnabled ? 'Settled wins split profit between burns and qualified holders.' : 'Add the token CA before LineEdge can track bankroll wagers, burns, or payouts.'}</p>
                 </div>
               </div>
               <div className="ledger-list">
@@ -769,10 +765,10 @@ export function App() {
                       <strong>{bet.matchup}</strong>
                       <small>{bet.bet_side} / {bet.sport}</small>
                     </div>
-                    <span>{formatCoverage(bet.stake, tokenSymbol)}</span>
+                    <span>{formatTokenAmount(bet.stake, tokenSymbol)}</span>
                     <span className={`status-badge ${bet.status.toLowerCase()}`}>{bet.status}</span>
-                    <span>{formatCoverage(bet.buyback_burned, tokenSymbol)}</span>
-                    <span>{formatCoverage(bet.dividend_distributed, tokenSymbol)}</span>
+                    <span>{formatTokenAmount(bet.buyback_burned, tokenSymbol)}</span>
+                    <span>{formatTokenAmount(bet.dividend_distributed, tokenSymbol)}</span>
                   </article>
                 )) : <div className="empty">No bets recorded yet.</div>}
               </div>
@@ -785,19 +781,19 @@ export function App() {
             <section className="metrics">
               <div>
                 <span>Total supply</span>
-                <strong>{formatCoverage(tokenStats?.total_supply, tokenSymbol)}</strong>
+                <strong>{formatTokenAmount(tokenStats?.total_supply, tokenSymbol)}</strong>
               </div>
               <div>
                 <span>Bankroll</span>
-                <strong>{formatCoverage(tokenStats?.bankroll_balance, tokenSymbol)}</strong>
+                <strong>{formatTokenAmount(tokenStats?.bankroll_balance, tokenSymbol)}</strong>
               </div>
               <div>
                 <span>Total burned</span>
-                <strong>{formatCoverage(tokenStats?.total_burned, tokenSymbol)}</strong>
+                <strong>{formatTokenAmount(tokenStats?.total_burned, tokenSymbol)}</strong>
               </div>
               <div>
                 <span>Holder payouts</span>
-                <strong>{formatCoverage(tokenStats?.total_distributed, tokenSymbol)}</strong>
+                <strong>{formatTokenAmount(tokenStats?.total_distributed, tokenSymbol)}</strong>
               </div>
             </section>
 
@@ -819,7 +815,7 @@ export function App() {
                 {holders.map((holder) => (
                   <div className="holder-row" key={holder.address}>
                     <strong>{compactAddress(holder.address)}</strong>
-                    <span>{formatCoverage(holder.balance, tokenSymbol)}</span>
+                    <span>{formatTokenAmount(holder.balance, tokenSymbol)}</span>
                     <span>{holder.percentage.toFixed(2)}%</span>
                     <span className={holder.is_dividend_eligible ? 'yes' : 'no'}>{holder.is_dividend_eligible ? 'Qualified' : 'Below tier'}</span>
                     <span className={holder.is_steering_eligible ? 'yes' : 'no'}>{holder.is_steering_eligible ? 'Qualified' : 'Below tier'}</span>
@@ -832,6 +828,7 @@ export function App() {
 
         {activeTab === 'steering' && protocolEnabled && (
           <div className="two-column steering-layout">
+
             <section className="panel">
               <div className="panel-heading compact">
                 <div>
@@ -923,7 +920,7 @@ export function App() {
 
         <div className="footer-main">
           <div className="footer-brand">
-            <h4>Coverage Desk</h4>
+            <h4>LineEdge</h4>
             <p>Autonomous AI sports spread agent, tokenomics ledger, and holder steering engine for crypto sports prediction markets.</p>
             <div className="social-nav-links">
               <a href="https://x.com/coveragedesk_" target="_blank" rel="noopener noreferrer">
@@ -960,8 +957,8 @@ export function App() {
           <div className="footer-col">
             <h5>Token</h5>
             <div className="footer-links">
-              <span>Token Name: <strong>Coverage</strong></span>
-              <span>Ticker: <strong>$CVR</strong></span>
+              <span>Token Name: <strong>LineEdge</strong></span>
+              <span>Ticker: <strong>$LINE</strong></span>
               <span>Burn Pool: <strong>50%</strong> Net Profit</span>
               <span>Dividends: <strong>50%</strong> to &gt;1% Holders</span>
             </div>
@@ -969,8 +966,8 @@ export function App() {
 
         </div>
         <div className="footer-bottom">
-          <span>&copy; {new Date().getFullYear()} Coverage Desk. All rights reserved.</span>
-          <span>Powered by CoverageDesk Agent Engine</span>
+          <span>&copy; {new Date().getFullYear()} LineEdge. All rights reserved.</span>
+          <span>Powered by LineEdge Agent Engine</span>
         </div>
       </footer>
       </section>
@@ -986,7 +983,7 @@ export function App() {
                   {legalModal === 'privacy' && 'Privacy Policy'}
                   {legalModal === 'risk' && 'Risk Disclosure & Disclaimer'}
                 </h3>
-                <p>Coverage Desk Protocol Legal Guidelines</p>
+                <p>LineEdge Protocol Legal Guidelines</p>
               </div>
               <button className="icon-button" type="button" onClick={() => setLegalModal(null)}>✕</button>
             </header>
@@ -994,20 +991,20 @@ export function App() {
               {legalModal === 'tos' && (
                 <>
                   <h4>1. Acceptance of Terms</h4>
-                  <p>By accessing or using Coverage Desk (coveragedesk.online), you agree to be bound by these Terms of Service. If you do not agree, do not access or use the platform.</p>
+                  <p>By accessing or using LineEdge (coveragedesk.online), you agree to be bound by these Terms of Service. If you do not agree, do not access or use the platform.</p>
                   <h4>2. Experimental AI & Prediction Markets</h4>
-                  <p>Coverage Desk operates an autonomous AI decision agent that tracks sports spreads and prediction market pricing. All analytics, ratings, models, and automated transactions are provided on an experimental basis for informational and steering purposes.</p>
-                  <h4>3. Tokenomics ($CVR) & Holder Steering</h4>
-                  <p>$CVR utility tokens allow holders with &ge;0.5% supply to participate in line-weighting steering by burning tokens. 50% of simulated net agent profits are directed to automatic token buyback & burn, and 50% are distributed to qualified holders (&gt;1% supply).</p>
+                  <p>LineEdge operates an autonomous AI decision agent that tracks sports spreads and prediction market pricing. All analytics, ratings, models, and automated transactions are provided on an experimental basis for informational and steering purposes.</p>
+                  <h4>3. Tokenomics ($LINE) & Holder Steering</h4>
+                  <p>$LINE utility tokens allow holders with &ge;0.5% supply to participate in line-weighting steering by burning tokens. 50% of simulated net agent profits are directed to automatic token buyback & burn, and 50% are distributed to qualified holders (&gt;1% supply).</p>
                   <h4>4. No Financial Advice</h4>
-                  <p>Content, models, and predictions produced by Coverage Desk do not constitute financial, investment, or gambling advice. Always conduct your own research.</p>
+                  <p>Content, models, and predictions produced by LineEdge do not constitute financial, investment, or gambling advice. Always conduct your own research.</p>
                 </>
               )}
 
               {legalModal === 'privacy' && (
                 <>
                   <h4>1. Data Collection</h4>
-                  <p>Coverage Desk does not collect personally identifiable information (PII). We do not require accounts, email addresses, or passwords.</p>
+                  <p>LineEdge does not collect personally identifiable information (PII). We do not require accounts, email addresses, or passwords.</p>
                   <h4>2. Blockchain & Wallet Data</h4>
                   <p>Public wallet addresses provided during holder steering or dividend verification are stored in public/on-chain ledgers and indexed by the backend for tokenomics calculations.</p>
                   <h4>3. Analytics & Local Storage</h4>
@@ -1018,7 +1015,7 @@ export function App() {
               {legalModal === 'risk' && (
                 <>
                   <h4>1. Cryptocurrency Risk</h4>
-                  <p>Digital assets, including $CVR, carry significant price volatility and risk of total loss. Crypto tokens are not insured by any government entity.</p>
+                  <p>Digital assets, including $LINE, carry significant price volatility and risk of total loss. Crypto tokens are not insured by any government entity.</p>
                   <h4>2. Autonomous Agent Risk</h4>
                   <p>The AI betting engine relies on automated scrapers, models, and algorithms. Model predictions can be inaccurate, incomplete, or delayed due to market conditions or data provider outages.</p>
                   <h4>3. Regulatory Compliance</h4>
@@ -1032,6 +1029,7 @@ export function App() {
           </div>
         </div>
       )}
+
     </main>
   )
 }
