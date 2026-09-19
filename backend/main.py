@@ -534,22 +534,20 @@ async def fetch_bluechip_analytics() -> dict[str, Any]:
   }
 
   target_urls = [BLUECHIP_WEEK_URL]
-  for week in range(1, 12):
+  for week in range(1, 10):
     url = f"https://bluechipanalytics.com/college-football/games/2026/week{week}/"
     if url not in target_urls:
       target_urls.append(url)
 
   games: dict[str, Any] = {}
 
-  async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
-    for target_url in target_urls:
-      try:
-        resp = await client.get(target_url)
-        if resp.status_code != 200:
-          continue
-        page = resp.text
-      except Exception:
+  async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers=headers) as client:
+    responses = await asyncio.gather(*[client.get(url) for url in target_urls], return_exceptions=True)
+
+    for resp in responses:
+      if isinstance(resp, Exception) or resp.status_code != 200:
         continue
+      page = resp.text
 
       card_matches = re.findall(
         r'<div class="matchup-header text-center">.*?<a href="([^"]+)".*?class="matchup-link">([^<]+)</a>.*?<div class="team text-end">.*?<div class="team-name">([^<]+)</div>.*?<div class="team-name">([^<]+)</div>',
@@ -642,6 +640,7 @@ async def fetch_bluechip_analytics() -> dict[str, Any]:
   BLUECHIP_CACHE["expires_at"] = now + BLUECHIP_CACHE_SECONDS
   BLUECHIP_CACHE["games"] = games
   return games
+
 
 
 
