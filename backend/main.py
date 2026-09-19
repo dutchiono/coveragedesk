@@ -309,12 +309,47 @@ def dollars_to_float(value: Any) -> float | None:
   try:
     return float(value)
   except (TypeError, ValueError):
+    matches = re.findall(r"[+-]?\d+(?:\.\d+)?", str(value))
+    return float(matches[-1]) if matches else None
+
+
+def clean_html_text(value: str) -> str:
+  text = re.sub(r"<[^>]+>", " ", value)
+  text = html.unescape(text)
+  return re.sub(r"\s+", " ", text).strip()
+
+
+def parse_team_line(value: str | None) -> tuple[str | None, float | None]:
+  if not value:
+    return None, None
+  text = clean_html_text(value)
+  match = re.match(r"(.+?)\s+([+-]?\d+(?:\.\d+)?)$", text)
+  if not match:
+    return None, dollars_to_float(text)
+  return match.group(1).strip(), abs(float(match.group(2)))
+
+
+def bluechip_table_cell(row_html: str, class_name: str) -> str | None:
+  match = re.search(rf'<td class="{re.escape(class_name)}"[^>]*>(.*?)</td>', row_html, flags=re.S)
+  if not match:
     return None
+  return clean_html_text(match.group(1))
 
 
 def fp_to_float(value: Any) -> float:
   parsed = dollars_to_float(value)
   return parsed if parsed is not None else 0
+
+
+def kalshi_price_cents(market: dict[str, Any], *keys: str) -> float | None:
+  for key in keys:
+    parsed = dollars_to_float(market.get(key))
+    if parsed is None:
+      continue
+    if "dollars" in key or parsed <= 1:
+      return round(parsed * 100, 2)
+    return parsed
+  return None
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
@@ -342,6 +377,20 @@ def contract_side_type(market: dict[str, Any]) -> str | None:
   return "favorite"
 
 
+def contract_side_team(market: dict[str, Any], bluechip: dict[str, Any]) -> str | None:
+  label_key = team_key(market.get("yes_sub_title") or market.get("title") or "")
+  candidates = [
+    bluechip.get("away_team"),
+    bluechip.get("home_team"),
+    bluechip.get("market_team"),
+    bluechip.get("model_team"),
+  ]
+  for candidate in candidates:
+    if candidate and team_key(candidate) in label_key:
+      return candidate
+  return None
+
+
 def contract_model_gap(
   bet_type: str,
   market: dict[str, Any],
@@ -356,20 +405,19 @@ def contract_model_gap(
     model_spread = bluechip.get("model_spread")
     if model_spread is None:
       return None
-    side_team = market.get("yes_sub_title") or market.get("title") or ""
     market_team = bluechip.get("market_team") or ""
     model_team = bluechip.get("model_team") or ""
-    is_home = team_key(side_team) == team_key(market_team) if market_team else True
     adjusted_model = model_spread
     if weather_impact and weather_impact.get("spread_adjustment"):
       adjusted_model += weather_impact["spread_adjustment"]
-    gap = threshold - adjusted_model if is_home else adjusted_model - threshold
-    if model_team and market_team and team_key(model_team) != team_key(market_team):
-      gap = -gap
+    side_team = contract_side_team(market, bluechip) or market_team
+    if side_team and model_team and team_key(side_team) != team_key(model_team):
+      return round(-adjusted_model - threshold, 1)
+    gap = adjusted_model - threshold
     return round(gap, 1)
 
   if bet_type == "total":
-    model_total = dollars_to_float(bluechip.get("model_spread"))
+    model_total = dollars_to_float(bluechip.get("model_total"))
     if model_total is None:
       return None
     if weather_impact and weather_impact.get("total_adjustment"):
@@ -504,6 +552,46 @@ async def fetch_bluechip_analytics() -> dict[str, Any]:
     game["model_spread"] = dollars_to_float(md_line)
     game["gap"] = dollars_to_float(gap)
 
+  table_match = re.search(r'<tbody id="hub-game-table-body">(.*?)</tbody>', page, flags=re.S)
+  if table_match:
+    for row_html in re.findall(r"<tr>(.*?)</tr>", table_match.group(1), flags=re.S):
+      href_match = re.search(r'href="([^"]+)"', row_html)
+      team_cells = re.findall(r'<td class="team-col"[^>]*>(.*?)</td>', row_html, flags=re.S)
+      if len(team_cells) < 2:
+        continue
+
+      away = clean_html_text(team_cells[0])
+      home = clean_html_text(team_cells[1])
+      if not away or not home:
+        continue
+
+      power_line = bluechip_table_cell(row_html, "powerline-col")
+      market_line = bluechip_table_cell(row_html, "line-col")
+      total = bluechip_table_cell(row_html, "ou-col")
+      model_team, model_spread = parse_team_line(power_line)
+      market_team, market_spread = parse_team_line(market_line)
+      key = matchup_key(away, home)
+      rel_url = href_match.group(1) if href_match else ""
+      game = games.setdefault(
+        key,
+        {
+          "url": rel_url if rel_url.startswith("http") else f"https://bluechipanalytics.com{rel_url}",
+          "title": f"{away} vs {home}",
+          "away_team": away,
+          "home_team": home,
+          "source": "Blue Chip Analytics",
+          "updated_at": now_iso(),
+        },
+      )
+      game["market_line"] = market_line
+      game["market_team"] = market_team
+      game["model_line"] = power_line
+      game["model_team"] = model_team
+      game["market_spread"] = market_spread
+      game["model_spread"] = model_spread
+      game["gap"] = round((market_spread or 0) - (model_spread or 0), 1) if market_spread is not None and model_spread is not None else None
+      game["market_total"] = dollars_to_float(total)
+
   BLUECHIP_CACHE["expires_at"] = now + BLUECHIP_CACHE_SECONDS
   BLUECHIP_CACHE["games"] = games
   return games
@@ -564,6 +652,12 @@ def weather_impact(bluechip: dict[str, Any] | None, baseline_total: float | None
   }
 
 
+def board_row_is_modeled(row: dict[str, Any]) -> bool:
+  rating = row.get("rating") or {}
+  metrics = row.get("metrics") or {}
+  return metrics.get("model_market_gap") is not None and rating.get("summary") != "Unmodeled market"
+
+
 def collapse_board_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
   groups: dict[str, list[dict[str, Any]]] = {}
   for row in rows:
@@ -572,7 +666,14 @@ def collapse_board_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
   collapsed: list[dict[str, Any]] = []
   for key, items in groups.items():
-    primary = max(items, key=lambda item: (item.get("edge_score") or 0, item.get("contract", {}).get("volume_24h") or 0))
+    primary = max(
+      items,
+      key=lambda item: (
+        1 if board_row_is_modeled(item) else 0,
+        item.get("edge_score") or 0,
+        item.get("contract", {}).get("volume_24h") or 0,
+      ),
+    )
     alternate_markets = []
     for item in items:
       if item["game_id"] == primary["game_id"]:
@@ -597,7 +698,15 @@ def collapse_board_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cloned["alternate_markets"] = alternate_markets
     collapsed.append(cloned)
 
-  return sorted(collapsed, key=lambda row: row.get("edge_score") or 0, reverse=True)
+  return sorted(
+    collapsed,
+    key=lambda row: (
+      1 if board_row_is_modeled(row) else 0,
+      row.get("edge_score") or 0,
+      row.get("contract", {}).get("volume_24h") or 0,
+    ),
+    reverse=True,
+  )
 
 
 async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
@@ -619,12 +728,12 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
 
       for market in markets:
         ticker = market.get("ticker", "")
-        yes_bid = fp_to_float(market.get("yes_bid_fp"))
-        yes_ask = fp_to_float(market.get("yes_ask_fp"))
-        no_bid = fp_to_float(market.get("no_bid_fp"))
-        no_ask = fp_to_float(market.get("no_ask_fp"))
-        last_price = fp_to_float(market.get("last_price_fp"))
-        previous_price = fp_to_float(market.get("previous_price_fp"))
+        yes_bid = kalshi_price_cents(market, "yes_bid", "yes_bid_dollars", "yes_bid_fp")
+        yes_ask = kalshi_price_cents(market, "yes_ask", "yes_ask_dollars", "yes_ask_fp")
+        no_bid = kalshi_price_cents(market, "no_bid", "no_bid_dollars", "no_bid_fp")
+        no_ask = kalshi_price_cents(market, "no_ask", "no_ask_dollars", "no_ask_fp")
+        last_price = kalshi_price_cents(market, "last_price", "last_price_dollars", "last_price_fp")
+        previous_price = kalshi_price_cents(market, "previous_price", "previous_price_dollars", "previous_price_fp")
 
         away_team, home_team = extract_matchup(market)
         b_key = matchup_key(away_team, home_team)
