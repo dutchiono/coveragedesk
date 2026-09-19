@@ -106,30 +106,24 @@ button {
   color: #a8b2a6;
 }
 
-.data-source {
+.feed-note {
   display: grid;
-  gap: 5px;
+  gap: 3px;
   border: 1px solid #3c4a43;
   border-radius: 6px;
   background: #0f1513;
-  padding: 12px;
+  padding: 10px 12px;
 }
 
-.data-source span {
+.feed-note span {
   color: #d9dfd6;
-  font-size: 0.86rem;
+  font-size: 0.8rem;
   font-weight: 800;
 }
 
-.data-source strong {
-  color: #fff;
-  font-size: 1.25rem;
-}
-
-.data-source small,
-.data-source em {
+.feed-note small {
   color: #a8b2a6;
-  font-style: normal;
+  font-size: 0.78rem;
 }
 
 .range-field input {
@@ -195,16 +189,13 @@ button {
 
 .content {
   display: grid;
-  gap: 20px;
+  gap: 14px;
   align-content: start;
-  padding: 28px;
+  padding: 22px;
 }
 
 .topbar {
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-  align-items: center;
+  display: block;
 }
 
 .eyebrow {
@@ -217,40 +208,23 @@ button {
 
 .topbar h2 {
   margin: 0;
-  font-size: clamp(1.7rem, 2.7vw, 2.6rem);
+  font-size: clamp(1.55rem, 2.2vw, 2.1rem);
+  line-height: 1.05;
 }
 
-.live-state,
+.board-meta {
+  margin: 7px 0 0;
+  color: #4f5652;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
 .notice {
   border-radius: 6px;
-  padding: 10px 12px;
-  font-weight: 800;
-}
-
-.live-state {
-  display: grid;
-  gap: 2px;
-  min-width: 132px;
-  border: 1px solid #dfe5d5;
-  background: #f8faf2;
-  color: #33401d;
-  white-space: nowrap;
-}
-
-.live-state span {
-  color: #65705c;
-  font-size: 0.72rem;
-  font-weight: 900;
-  text-transform: uppercase;
-}
-
-.live-state strong {
-  font-size: 0.92rem;
-}
-
-.notice {
   background: #ffe3dd;
   color: #7f2418;
+  padding: 10px 12px;
+  font-weight: 800;
 }
 
 .metrics {

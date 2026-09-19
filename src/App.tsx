@@ -384,7 +384,9 @@ function App() {
     if (!latest) return row.updated_at
     return new Date(row.updated_at) > new Date(latest) ? row.updated_at : latest
   }, null)
-  const liveLabel = board.source === 'kalshi' ? 'Kalshi live' : board.source === 'preview' ? 'Preview feed' : 'Live feed'
+  const modelSource =
+    selectedSport === 'NCAAF' ? 'Blue Chip model' : selectedSport === 'NFL' ? 'Model pending' : 'Models where available'
+  const oddsSource = board.source === 'preview' ? 'Preview odds' : board.source === 'kalshi' ? 'Kalshi odds' : 'Sportsbook odds'
 
   function toggleSort(nextKey: SortKey) {
     if (nextKey === sortKey) {
@@ -437,10 +439,8 @@ function App() {
           </div>
         </div>
 
-        <div className="data-source">
-          <span>Live feed</span>
-          <strong>{liveLabel}</strong>
-          <small>{refreshing ? 'Updating now' : `Auto-refreshes every 5 minutes`}</small>
+        <div className="feed-note">
+          <span>{refreshing ? 'Updating now' : 'Auto-updates every 5 min'}</span>
           <small>{rows.length.toLocaleString()} ranked lines</small>
         </div>
       </aside>
@@ -448,33 +448,14 @@ function App() {
       <section className="content">
         <div className="topbar">
           <div>
-            <p className="eyebrow">Live market board</p>
-            <h2>Blue Chip gaps with Kalshi odds</h2>
-          </div>
-          <div className="live-state">
-            <span>{board.source === 'preview' ? 'Preview' : 'Live'}</span>
-            <strong>{latestUpdate ? formatDate(latestUpdate) : 'Loading'}</strong>
+            <p className="eyebrow">{selectedSport === 'ALL' ? 'All football' : selectedSport} board</p>
+            <h2>Best edges</h2>
+            <p className="board-meta">
+              {rows.length.toLocaleString()} lines · Top gap {formatSigned(topGap)} · {modelSource} · {oddsSource}
+              {latestUpdate ? ` · Updated ${formatDate(latestUpdate)}` : ''}
+            </p>
           </div>
         </div>
-
-        <section className="metrics" aria-label="Summary">
-          <div>
-            <span>Ranked lines</span>
-            <strong>{rows.length.toLocaleString()}</strong>
-          </div>
-          <div>
-            <span>Top gap</span>
-            <strong>{formatSigned(topGap)}</strong>
-          </div>
-          <div>
-            <span>Last update</span>
-            <strong>{latestUpdate ? formatDate(latestUpdate) : '-'}</strong>
-          </div>
-          <div>
-            <span>Source</span>
-            <strong>{board.source}</strong>
-          </div>
-        </section>
 
         <section className="detail-grid">
           {selectedRow ? (
