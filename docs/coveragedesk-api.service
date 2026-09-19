@@ -1,0 +1,14 @@
+[Unit]
+Description=CoverageDesk FastAPI Backend API
+After=network.target
+
+[Service]
+User=drink
+WorkingDirectory=/srv/drink/apps/coveragedesk/backend
+EnvironmentFile=-/srv/drink/apps/coveragedesk/backend/.env
+ExecStart=/srv/drink/apps/coveragedesk/backend/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8800
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

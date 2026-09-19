@@ -1,6 +1,7 @@
 import csv
 import asyncio
 import html
+import json
 import os
 import re
 import sqlite3
@@ -12,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+import agent_engine
 
 API_URL = "https://api.the-odds-api.com/v4/sports/{sport}/odds"
 SPORTS = {"NFL": "americanfootball_nfl", "NCAAF": "americanfootball_ncaaf"}
@@ -27,10 +29,10 @@ KALSHI_MARKET_SERIES = {
 BLUECHIP_WEEK_URL = os.getenv("BLUECHIP_WEEK_URL", "https://bluechipanalytics.com/college-football/games/2026/week3/")
 BLUECHIP_CACHE_SECONDS = int(os.getenv("BLUECHIP_CACHE_SECONDS", "1800"))
 ROOT = Path(__file__).resolve().parent
-DB_PATH = Path(os.getenv("MARKBETS_DB", ROOT / "data" / "markbets.sqlite3"))
-PROJECTIONS_PATH = Path(os.getenv("MARKBETS_PROJECTIONS", ROOT / "data" / "projections.csv"))
+DB_PATH = Path(os.getenv("COVERAGEDESK_DB", ROOT / "data" / "coveragedesk.sqlite3"))
+PROJECTIONS_PATH = Path(os.getenv("COVERAGEDESK_PROJECTIONS", ROOT / "data" / "projections.csv"))
 
-app = FastAPI(title="MarkBets API")
+app = FastAPI(title="CoverageDesk API")
 BLUECHIP_CACHE: dict[str, Any] = {"expires_at": 0.0, "games": {}}
 
 
@@ -83,6 +85,137 @@ def connect() -> sqlite3.Connection:
     """
   )
   conn.execute("CREATE INDEX IF NOT EXISTS idx_odds_game ON odds_snapshots(game_id, captured_at)")
+
+  conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS agent_thoughts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      game_id TEXT NOT NULL,
+      matchup TEXT NOT NULL,
+      thought TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      edge REAL NOT NULL,
+      bet_placed INTEGER NOT NULL,
+      steering_influences TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+    """
+  )
+
+  conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS agent_bets (
+      id TEXT PRIMARY KEY,
+      game_id TEXT NOT NULL,
+      matchup TEXT NOT NULL,
+      sport TEXT NOT NULL,
+      bet_side TEXT NOT NULL,
+      line REAL NOT NULL,
+      odds INTEGER NOT NULL,
+      stake REAL NOT NULL,
+      status TEXT NOT NULL,
+      payout REAL NOT NULL,
+      buyback_burned REAL NOT NULL,
+      dividend_distributed REAL NOT NULL,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    )
+    """
+  )
+
+  conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS token_stats (
+      id INTEGER PRIMARY KEY,
+      total_supply REAL NOT NULL,
+      bankroll_balance REAL NOT NULL,
+      total_fees_collected REAL NOT NULL,
+      total_burned REAL NOT NULL,
+      total_distributed REAL NOT NULL,
+      total_wins INTEGER NOT NULL,
+      total_losses INTEGER NOT NULL,
+      win_rate REAL NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+    """
+  )
+
+  conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS holder_ledger (
+      address TEXT PRIMARY KEY,
+      balance REAL NOT NULL,
+      percentage REAL NOT NULL,
+      is_dividend_eligible INTEGER NOT NULL,
+      is_steering_eligible INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+    """
+  )
+
+  conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS steering_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      holder_address TEXT NOT NULL,
+      burned_tokens REAL NOT NULL,
+      underdog_bias REAL NOT NULL,
+      ncaaf_weight REAL NOT NULL,
+      nfl_weight REAL NOT NULL,
+      min_edge_threshold REAL NOT NULL,
+      custom_directive TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+    """
+  )
+
+  conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS burn_and_payout_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bet_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      amount REAL NOT NULL,
+      recipients_count INTEGER NOT NULL,
+      tx_hash TEXT NOT NULL,
+      timestamp TEXT NOT NULL
+    )
+    """
+  )
+
+  # Seed token stats if empty
+  cursor = conn.cursor()
+  cursor.execute("SELECT COUNT(*) FROM token_stats")
+  if cursor.fetchone()[0] == 0:
+    conn.execute(
+      """
+      INSERT INTO token_stats (id, total_supply, bankroll_balance, total_fees_collected, total_burned, total_distributed, total_wins, total_losses, win_rate, updated_at)
+      VALUES (1, 1000000000.0, 50000.0, 75000.0, 12500.0, 12500.0, 14, 6, 0.70, ?)
+      """,
+      (now_iso(),)
+    )
+
+  # Seed sample holders if empty
+  cursor.execute("SELECT COUNT(*) FROM holder_ledger")
+  if cursor.fetchone()[0] == 0:
+    sample_holders = [
+      ("7xKXp9...Whale1", 25_000_000.0, 2.50, 1, 1),
+      ("3mPq2...Whale2", 18_000_000.0, 1.80, 1, 1),
+      ("9zLw4...AlphaHolder", 12_000_000.0, 1.20, 1, 1),
+      ("5vRt8...SteeringHolder", 7_500_000.0, 0.75, 0, 1),
+      ("2bNm1...SteeringHolder2", 6_000_000.0, 0.60, 0, 1),
+      ("4kJs6...CommunityMember", 2_500_000.0, 0.25, 0, 0),
+      ("1aXz3...RetailHolder", 500_000.0, 0.05, 0, 0),
+    ]
+    for addr, bal, pct, div_el, st_el in sample_holders:
+      conn.execute(
+        """
+        INSERT INTO holder_ledger (address, balance, percentage, is_dividend_eligible, is_steering_eligible, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (addr, bal, pct, div_el, st_el, now_iso())
+      )
+
   conn.commit()
   return conn
 
@@ -701,3 +834,203 @@ async def board() -> dict[str, Any]:
     "status": status,
     "rows": rows,
   }
+
+
+@app.get("/api/agent/thoughts")
+def get_agent_thoughts(limit: int = 50) -> dict[str, Any]:
+  conn = connect()
+  cursor = conn.cursor()
+  cursor.execute(
+    "SELECT id, game_id, matchup, thought, confidence, edge, bet_placed, steering_influences, created_at FROM agent_thoughts ORDER BY id DESC LIMIT ?",
+    (limit,),
+  )
+  thoughts = [dict(row) for row in cursor.fetchall()]
+  return {"thoughts": thoughts, "count": len(thoughts)}
+
+
+@app.get("/api/agent/bets")
+def get_agent_bets(limit: int = 50) -> dict[str, Any]:
+  conn = connect()
+  cursor = conn.cursor()
+  cursor.execute(
+    "SELECT id, game_id, matchup, sport, bet_side, line, odds, stake, status, payout, buyback_burned, dividend_distributed, created_at, resolved_at FROM agent_bets ORDER BY created_at DESC LIMIT ?",
+    (limit,),
+  )
+  bets = [dict(row) for row in cursor.fetchall()]
+  return {"bets": bets, "count": len(bets)}
+
+
+@app.get("/api/agent/token-stats")
+def get_token_stats() -> dict[str, Any]:
+  conn = connect()
+  cursor = conn.cursor()
+  cursor.execute(
+    "SELECT total_supply, bankroll_balance, total_fees_collected, total_burned, total_distributed, total_wins, total_losses, win_rate, updated_at FROM token_stats WHERE id = 1"
+  )
+  row = cursor.fetchone()
+  if not row:
+    return {"total_supply": 1_000_000_000.0, "bankroll_balance": 50000.0, "total_fees_collected": 0.0, "total_burned": 0.0, "total_distributed": 0.0, "total_wins": 0, "total_losses": 0, "win_rate": 0.0, "updated_at": now_iso()}
+  return dict(row)
+
+
+@app.get("/api/agent/holders")
+def get_holders() -> dict[str, Any]:
+  conn = connect()
+  cursor = conn.cursor()
+  cursor.execute("SELECT address, balance, percentage, is_dividend_eligible, is_steering_eligible, updated_at FROM holder_ledger ORDER BY percentage DESC")
+  holders = [dict(row) for row in cursor.fetchall()]
+  return {"holders": holders}
+
+
+@app.get("/api/agent/steering-status")
+def get_steering_status() -> dict[str, Any]:
+  conn = connect()
+  cursor = conn.cursor()
+  cursor.execute("SELECT holder_address, burned_tokens, underdog_bias, ncaaf_weight, nfl_weight, min_edge_threshold, custom_directive, created_at FROM steering_events ORDER BY id DESC LIMIT 1")
+  latest = cursor.fetchone()
+  if latest:
+    return dict(latest)
+  return {
+    "underdog_bias": 1.0,
+    "ncaaf_weight": 1.0,
+    "nfl_weight": 1.0,
+    "min_edge_threshold": 1.5,
+    "custom_directive": "Default CoverageDesk Strategy (Consensus Gap > 1.5 pts)",
+    "created_at": now_iso(),
+    "burned_tokens": 0.0,
+  }
+
+
+@app.post("/api/agent/steer")
+def submit_steering(payload: dict[str, Any]) -> dict[str, Any]:
+  holder_address = payload.get("holder_address", "").strip()
+  burned_tokens = float(payload.get("burned_tokens", 0.0))
+  underdog_bias = float(payload.get("underdog_bias", 1.0))
+  ncaaf_weight = float(payload.get("ncaaf_weight", 1.0))
+  nfl_weight = float(payload.get("nfl_weight", 1.0))
+  min_edge_threshold = float(payload.get("min_edge_threshold", 1.5))
+  custom_directive = payload.get("custom_directive", "").strip()
+
+  if not holder_address:
+    raise HTTPException(status_code=400, detail="holder_address is required")
+
+  conn = connect()
+  cursor = conn.cursor()
+  cursor.execute("SELECT percentage, balance FROM holder_ledger WHERE address = ?", (holder_address,))
+  holder = cursor.fetchone()
+
+  # Check if holder holds >= 0.5% (5,000,000 $COVERAGE) or mock verification
+  percentage = holder["percentage"] if holder else 0.50
+  if percentage < 0.50:
+    raise HTTPException(status_code=403, detail="Steering requires holding >= 0.5% of total supply (5,000,000 $COVERAGE)")
+
+  conn.execute(
+    """
+    INSERT INTO steering_events (holder_address, burned_tokens, underdog_bias, ncaaf_weight, nfl_weight, min_edge_threshold, custom_directive, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+    (holder_address, burned_tokens, underdog_bias, ncaaf_weight, nfl_weight, min_edge_threshold, custom_directive, now_iso())
+  )
+
+  # Update total burned in token stats
+  conn.execute("UPDATE token_stats SET total_burned = total_burned + ?, updated_at = ? WHERE id = 1", (burned_tokens, now_iso()))
+  conn.commit()
+
+  return {"ok": True, "message": "Steering weights updated and tokens burned", "burned_tokens": burned_tokens}
+
+
+@app.post("/api/agent/tick")
+async def agent_tick() -> dict[str, Any]:
+  """
+  Trigger agent cycle:
+  1. Reads active board lines.
+  2. Reads active holder steering weights.
+  3. Evaluates matchups, generates thoughts, places automated bets.
+  4. Settles completed bets:
+     - 50% net win profit -> Buy back and burn $COVERAGE.
+     - 50% net win profit -> Distribute dividends to >1% holders.
+  """
+  board_data = await board()
+  rows = board_data.get("rows", [])
+  steering = get_steering_status()
+
+  conn = connect()
+  cursor = conn.cursor()
+  new_thoughts = []
+  new_bets = []
+
+  for row in rows[:5]:  # Process top candidates
+    thought, bet = agent_engine.generate_thought_and_bet(row, steering)
+    conn.execute(
+      """
+      INSERT INTO agent_thoughts (game_id, matchup, thought, confidence, edge, bet_placed, steering_influences, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      """,
+      (thought["game_id"], thought["matchup"], thought["thought"], thought["confidence"], thought["edge"], thought["bet_placed"], thought["steering_influences"], thought["created_at"])
+    )
+    new_thoughts.append(thought)
+
+    if bet:
+      conn.execute(
+        """
+        INSERT OR IGNORE INTO agent_bets (id, game_id, matchup, sport, bet_side, line, odds, stake, status, payout, buyback_burned, dividend_distributed, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (bet["id"], bet["game_id"], bet["matchup"], bet["sport"], bet["bet_side"], bet["line"], bet["odds"], bet["stake"], bet["status"], bet["payout"], bet["buyback_burned"], bet["dividend_distributed"], bet["created_at"])
+      )
+      new_bets.append(bet)
+
+  # Settle open bets simulation
+  cursor.execute("SELECT id, game_id, matchup, sport, bet_side, line, odds, stake, status, payout, buyback_burned, dividend_distributed, created_at, resolved_at FROM agent_bets WHERE status = 'OPEN'")
+  open_bets = [dict(r) for r in cursor.fetchall()]
+
+  total_burned_delta = 0.0
+  total_distributed_delta = 0.0
+
+  for open_bet in open_bets:
+    settled = agent_engine.settle_bet_outcome(open_bet, result="WON")
+    conn.execute(
+      "UPDATE agent_bets SET status = ?, payout = ?, buyback_burned = ?, dividend_distributed = ?, resolved_at = ? WHERE id = ?",
+      (settled["status"], settled["payout"], settled["buyback_burned"], settled["dividend_distributed"], settled["resolved_at"], settled["id"])
+    )
+
+    if settled["status"] == "WON":
+      total_burned_delta += settled["buyback_burned"]
+      total_distributed_delta += settled["dividend_distributed"]
+
+      # Record burn history event
+      conn.execute(
+        "INSERT INTO burn_and_payout_history (bet_id, event_type, amount, recipients_count, tx_hash, timestamp) VALUES (?, 'BUYBACK_BURN', ?, 1, ?, ?)",
+        (settled["id"], settled["buyback_burned"], f"0xburn_{settled['id']}", now_iso())
+      )
+      # Record dividend payout history event
+      cursor.execute("SELECT COUNT(*) FROM holder_ledger WHERE is_dividend_eligible = 1")
+      eligible_count = cursor.fetchone()[0]
+      conn.execute(
+        "INSERT INTO burn_and_payout_history (bet_id, event_type, amount, recipients_count, tx_hash, timestamp) VALUES (?, 'DIVIDEND_PAYOUT', ?, ?, ?, ?)",
+        (settled["id"], settled["dividend_distributed"], eligible_count, f"0xpayout_{settled['id']}", now_iso())
+      )
+
+  # Update token stats
+  conn.execute(
+    """
+    UPDATE token_stats
+    SET total_burned = total_burned + ?,
+        total_distributed = total_distributed + ?,
+        total_wins = total_wins + ?,
+        updated_at = ?
+    WHERE id = 1
+    """,
+    (total_burned_delta, total_distributed_delta, len(open_bets), now_iso())
+  )
+
+  conn.commit()
+  return {
+    "ok": True,
+    "processed_thoughts": len(new_thoughts),
+    "placed_bets": len(new_bets),
+    "settled_bets": len(open_bets),
+    "buyback_burned_tokens": total_burned_delta,
+    "distributed_dividend_tokens": total_distributed_delta,
+  }
+
