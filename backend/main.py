@@ -711,8 +711,11 @@ def board_row_is_modeled(row: dict[str, Any]) -> bool:
 def collapse_board_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
   groups: dict[str, list[dict[str, Any]]] = {}
   for row in rows:
-    key = matchup_key(row["away_team"], row["home_team"])
-    groups.setdefault(key, []).append(row)
+    if row.get("sport") in {"FINANCIALS", "ECONOMICS", "POLITICS", "TECH", "CULTURE"}:
+      key = row.get("game_id", "")
+    else:
+      key = matchup_key(row["away_team"], row["home_team"])
+    groups.setdefault(key or row.get("game_id", ""), []).append(row)
 
   collapsed: list[dict[str, Any]] = []
   for key, items in groups.items():
@@ -759,13 +762,39 @@ def collapse_board_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
   )
 
 
+PRIMARY_CAT_MAP = {
+  "Sports": "SPORTS",
+  "American Football": "SPORTS",
+  "Basketball": "SPORTS",
+  "Baseball": "SPORTS",
+  "Financials": "FINANCIALS",
+  "Crypto": "FINANCIALS",
+  "Commodities": "FINANCIALS",
+  "Companies": "FINANCIALS",
+  "Economics": "ECONOMICS",
+  "Politics": "POLITICS",
+  "Elections": "POLITICS",
+  "World": "POLITICS",
+  "Science and Technology": "TECH",
+  "AI": "TECH",
+  "Climate and Weather": "TECH",
+  "Transportation": "TECH",
+  "Health": "TECH",
+  "Entertainment": "CULTURE",
+  "Mentions": "CULTURE",
+  "Social": "CULTURE",
+}
+
+
 async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
   bluechip_games = await fetch_bluechip_analytics()
   raw_count = 0
   board: list[dict[str, Any]] = []
+  seen_tickers: set[str] = set()
   captured_at = now_iso()
 
   async with httpx.AsyncClient(timeout=15.0) as client:
+    # 1. Fetch targeted Sports spread series for BlueChip model matching
     for (sport_name, bet_type), series in KALSHI_MARKET_SERIES.items():
       url = f"{KALSHI_API_URL}/markets"
       params = {"series_ticker": series, "limit": 100, "status": "open"}
@@ -778,6 +807,10 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
 
       for market in markets:
         ticker = market.get("ticker", "")
+        if not ticker or ticker in seen_tickers:
+          continue
+        seen_tickers.add(ticker)
+
         yes_bid = kalshi_price_cents(market, "yes_bid", "yes_bid_dollars", "yes_bid_fp")
         yes_ask = kalshi_price_cents(market, "yes_ask", "yes_ask_dollars", "yes_ask_fp")
         no_bid = kalshi_price_cents(market, "no_bid", "no_bid_dollars", "no_bid_fp")
@@ -806,13 +839,17 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
         positive_edge = max(rating.get("edge") or 0, 0)
         edge_score = 0 if rating.get("grade") == "Even" else round(positive_gap * 10 + positive_edge * 10 + weather_score / 10, 2)
 
+        is_arb = bool(yes_bid is not None and no_bid is not None and yes_bid > 0 and no_bid > 0 and (yes_bid + no_bid) < 98.0)
+
         board.append(
           {
             "game_id": ticker,
             "data_source": "kalshi",
             "sport": sport_name,
+            "category": "SPORTS",
             "bet_type": bet_type,
             "edge_score": edge_score,
+            "is_arb": is_arb,
             "commence_time": market.get("occurrence_datetime") or market.get("expected_expiration_time"),
             "away_team": away_team,
             "home_team": home_team,
@@ -858,8 +895,126 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
           }
         )
 
+    # 2. Concurrently fetch open events across ALL Kalshi categories (Financials, Macro, Politics, Tech, Culture)
+    try:
+      resp_events = await client.get(f"{KALSHI_API_URL}/events", params={"status": "open", "limit": 120})
+      if resp_events.status_code == 200:
+        events = resp_events.json().get("events", [])
+        sem = asyncio.Semaphore(12)
+
+        async def fetch_event_m(ev: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+          async with sem:
+            try:
+              r = await client.get(f"{KALSHI_API_URL}/markets", params={"event_ticker": ev["event_ticker"]})
+              if r.status_code == 200:
+                return ev, r.json().get("markets", [])
+            except Exception:
+              pass
+            return ev, []
+
+        event_results = await asyncio.gather(*[fetch_event_m(ev) for ev in events])
+
+        for ev, markets in event_results:
+          raw_cat = ev.get("category") or "General"
+          cat = PRIMARY_CAT_MAP.get(raw_cat, "POLITICS" if "Elections" in raw_cat else "TECH")
+
+          for market in markets:
+            ticker = market.get("ticker", "")
+            if not ticker or ticker in seen_tickers:
+              continue
+            seen_tickers.add(ticker)
+            raw_count += 1
+
+            yes_bid = kalshi_price_cents(market, "yes_bid", "yes_bid_dollars", "yes_bid_fp")
+            yes_ask = kalshi_price_cents(market, "yes_ask", "yes_ask_dollars", "yes_ask_fp")
+            no_bid = kalshi_price_cents(market, "no_bid", "no_bid_dollars", "no_bid_fp")
+            no_ask = kalshi_price_cents(market, "no_ask", "no_ask_dollars", "no_ask_fp")
+            last_price = kalshi_price_cents(market, "last_price", "last_price_dollars", "last_price_fp")
+            previous_price = kalshi_price_cents(market, "previous_price", "previous_price_dollars", "previous_price_fp")
+
+            price_move = None
+            if last_price is not None and previous_price is not None and previous_price > 0:
+              price_move = round(last_price - previous_price, 1)
+
+            volume = fp_to_float(market.get("volume_fp"))
+            volume_24h = fp_to_float(market.get("volume_24h_fp"))
+            open_interest = fp_to_float(market.get("open_interest_fp"))
+
+            is_arb = bool(yes_bid is not None and no_bid is not None and yes_bid > 0 and no_bid > 0 and (yes_bid + no_bid) < 98.0)
+
+            title = (market.get("title") or ev.get("title") or "").replace("?", "")
+            side_label = market.get("yes_sub_title") or market.get("title") or title
+
+            edge_score = 40.0
+            if is_arb:
+              edge_score = round(150.0 + (98.0 - (yes_bid + no_bid)) * 5, 2)
+            elif volume > 5000:
+              edge_score = round(80.0 + min(volume / 1000, 40), 2)
+            elif price_move and abs(price_move) > 5:
+              edge_score = round(70.0 + min(abs(price_move) * 2, 40), 2)
+
+            board.append(
+              {
+                "game_id": ticker,
+                "data_source": "kalshi",
+                "sport": cat,
+                "category": cat,
+                "raw_category": raw_cat,
+                "bet_type": "binary_outcome",
+                "edge_score": edge_score,
+                "is_arb": is_arb,
+                "commence_time": market.get("expiration_time") or market.get("expected_expiration_time") or captured_at,
+                "away_team": title,
+                "home_team": raw_cat,
+                "market": {
+                  "consensus_spread": None,
+                  "best_favorite_line": yes_bid,
+                  "best_underdog_line": yes_ask,
+                  "opening_spread": previous_price,
+                  "book_count": 1,
+                  "latest_book": "Kalshi",
+                  "latest_timestamp": market.get("updated_time") or captured_at,
+                },
+                "contract": {
+                  "ticker": ticker,
+                  "title": title,
+                  "side_label": side_label,
+                  "yes_bid": yes_bid,
+                  "yes_ask": yes_ask,
+                  "no_bid": no_bid,
+                  "no_ask": no_ask,
+                  "last_price": last_price,
+                  "previous_price": previous_price,
+                  "price_move": price_move,
+                  "volume": volume,
+                  "volume_24h": volume_24h,
+                  "open_interest": open_interest,
+                  "status": market.get("status"),
+                },
+                "model": {"fair_spread": None, "source": None, "updated_at": None},
+                "bluechip": None,
+                "weather_impact": None,
+                "rating": {
+                  "grade": "Arbitrage" if is_arb else "Market",
+                  "summary": f"Orderbook Arb Opportunity ({yes_bid}c / {no_bid}c)" if is_arb else f"Kalshi {raw_cat} Market",
+                  "edge": edge_score,
+                },
+                "metrics": {
+                  "model_market_gap": None,
+                  "line_move": price_move,
+                  "confidence_score": 85 if is_arb else 60,
+                },
+                "updated_at": market.get("updated_time") or captured_at,
+              }
+            )
+    except Exception as e:
+      logger.warning("Error fetching multi-category Kalshi events: %s", e)
+
   ranked_rows = collapse_board_rows(board)
-  return ranked_rows, f"Fetched {raw_count} Kalshi contracts; using {len(bluechip_games)} Blue Chip NCAAF games and showing {len(ranked_rows)} ranked lines"
+  return (
+    ranked_rows,
+    f"Fetched {raw_count} Kalshi contracts across Sports, Finance, Macro, Politics & Tech; {len(ranked_rows)} active lines ready",
+  )
 
 
 def market_prompt_line(row: dict[str, Any], rank: int) -> str:

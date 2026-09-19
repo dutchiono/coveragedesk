@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 
-type SportLabel = 'ALL' | 'NFL' | 'NCAAF'
+type SportLabel = 'ALL' | 'SPORTS' | 'NCAAF' | 'NFL' | 'FINANCIALS' | 'ECONOMICS' | 'POLITICS' | 'TECH' | 'CULTURE'
 type TabName = 'board' | 'agent' | 'tokenomics' | 'steering'
 const REFRESH_MS = 5 * 60 * 1000
 
 type BoardRow = {
   game_id: string
   data_source?: 'sportsbook' | 'kalshi'
-  sport: 'NFL' | 'NCAAF'
+  sport: string
+  category?: string
+  raw_category?: string
+  is_arb?: boolean
   bet_type?: 'spread' | 'total'
   edge_score?: number
   commence_time: string
@@ -292,14 +295,23 @@ function isModeled(row: BoardRow): boolean {
   return modelGap(row) !== null && row.rating?.summary !== 'Unmodeled market'
 }
 
+function gameTitle(row: BoardRow): string {
+  if (row.sport === 'NCAAF' || row.sport === 'NFL' || (row.away_team.includes(' at ') || row.home_team.includes(' at '))) {
+    return `${row.away_team} at ${row.home_team}`
+  }
+  return row.contract?.title ?? row.away_team
+}
+
 function ratingLabel(row: BoardRow): string {
-  if (!isModeled(row)) return 'Unrated'
+  if (row.is_arb) return '⚡ Orderbook Arb'
+  if (!isModeled(row)) return row.category ?? row.raw_category ?? 'Kalshi'
   if (!row.rating) return 'Model'
   return row.rating?.grade ?? 'Fair'
 }
 
 function ratingValue(row: BoardRow): string {
-  if (!isModeled(row)) return 'No model'
+  if (row.is_arb && row.contract) return `${row.contract.yes_bid ?? 0}c / ${row.contract.no_bid ?? 0}c`
+  if (!isModeled(row)) return row.contract?.yes_bid ? `${row.contract.yes_bid}c` : 'Market'
   const cents = row.rating?.price_edge_cents
   if (cents !== null && cents !== undefined && Number.isFinite(cents) && Math.abs(cents) >= 0.1) {
     return `${cents > 0 ? '+' : ''}${cents.toFixed(1)}c`
@@ -308,7 +320,8 @@ function ratingValue(row: BoardRow): string {
 }
 
 function ratingClass(row: BoardRow): string {
-  if (!isModeled(row)) return 'unrated'
+  if (row.is_arb) return 'prime'
+  if (!isModeled(row)) return 'lean'
   const grade = (row.rating?.grade ?? 'Even').toLowerCase().replace(/\s+/g, '-')
   if (grade.includes('strong-buy')) return 'prime'
   if (grade === 'buy') return 'strong'
@@ -431,7 +444,11 @@ export function App() {
 
   const baseRows = useMemo(() => {
     return board.rows
-      .filter((row) => selectedSport === 'ALL' || row.sport === selectedSport)
+      .filter((row) => {
+        if (selectedSport === 'ALL') return true
+        if (selectedSport === 'SPORTS') return row.sport === 'SPORTS' || row.sport === 'NCAAF' || row.sport === 'NFL' || row.category === 'SPORTS'
+        return row.sport === selectedSport || row.category === selectedSport
+      })
       .filter((row) => rowMatches(row, teamSearch))
   }, [board.rows, selectedSport, teamSearch])
 
@@ -439,8 +456,11 @@ export function App() {
 
   const rows = useMemo(() => {
     return baseRows
-      .filter((row) => showAllGames || localDateKey(row.commence_time) === slateKey)
+      .filter((row) => showAllGames || (selectedSport !== 'SPORTS' && selectedSport !== 'NCAAF' && selectedSport !== 'NFL') || localDateKey(row.commence_time) === slateKey)
       .sort((a, b) => {
+        const aArb = a.is_arb ? 1 : 0
+        const bArb = b.is_arb ? 1 : 0
+        if (aArb !== bArb) return bArb - aArb
         const aModeled = isModeled(a) ? 1 : 0
         const bModeled = isModeled(b) ? 1 : 0
         if (aModeled !== bModeled) return bModeled - aModeled
@@ -448,7 +468,7 @@ export function App() {
         const bEdge = b.edge_score ?? Math.abs(modelGap(b) ?? 0) * 20
         return bEdge - aEdge || Math.abs(modelGap(b) ?? 0) - Math.abs(modelGap(a) ?? 0)
       })
-  }, [baseRows, showAllGames, slateKey])
+  }, [baseRows, selectedSport, showAllGames, slateKey])
 
   const selectedRow = rows.find((row) => row.game_id === selectedGameId) ?? rows[0] ?? null
   const openBets = agentBets.filter((bet) => bet.status === 'OPEN').length
@@ -498,10 +518,10 @@ export function App() {
         {activeTab === 'board' && (
           <>
             <label className="field">
-              <span>Team search</span>
+              <span>Market search</span>
               <input
                 onChange={(event) => setTeamSearch(event.target.value)}
-                placeholder="Team name"
+                placeholder="Search market or team"
                 type="search"
                 value={teamSearch}
               />
@@ -509,11 +529,15 @@ export function App() {
 
             <div className="field-group">
               <label className="field">
-                <span>Sport filter</span>
+                <span>Category filter</span>
                 <select onChange={(event) => setSelectedSport(event.target.value as SportLabel)} value={selectedSport}>
-                  <option value="ALL">All sports</option>
-                  <option value="NCAAF">NCAAF</option>
-                  <option value="NFL">NFL</option>
+                  <option value="ALL">⚡ All Categories</option>
+                  <option value="SPORTS">🏈 Sports Markets</option>
+                  <option value="FINANCIALS">📈 Crypto & Financials</option>
+                  <option value="ECONOMICS">🏛️ Macro & Economics</option>
+                  <option value="POLITICS">🗳️ Politics & Elections</option>
+                  <option value="TECH">🔬 Tech, AI & Climate</option>
+                  <option value="CULTURE">🎭 Culture & Entertainment</option>
                 </select>
               </label>
 
@@ -551,7 +575,7 @@ export function App() {
           <div>
             <p className="eyebrow">coveragedesk.online</p>
             <h2>
-              {activeTab === 'board' && `${selectedSport === 'ALL' ? 'Football' : selectedSport} board`}
+              {activeTab === 'board' && `${selectedSport === 'ALL' ? 'All Kalshi & Sports' : selectedSport} board`}
               {activeTab === 'agent' && 'Agent ledger'}
               {activeTab === 'tokenomics' && 'Token ledger'}
               {activeTab === 'steering' && 'Holder steering'}
@@ -560,7 +584,7 @@ export function App() {
               {activeTab === 'board' && `${rows.length.toLocaleString()} markets | ${slateLabel} | ${modeledCount.toLocaleString()} modeled | Top gap ${formatSigned(topGap)} | Updated ${formatDate(board.generated_at)}`}
               {activeTab === 'agent' && `${openBets} open wagers | ${settledBets} settled | ${agentThoughts.length} market reads`}
               {activeTab === 'tokenomics' && `${formatTokenAmount(tokenStats?.total_supply, tokenSymbol)} supply | ${formatPercent(tokenStats?.win_rate, 0)} win rate`}
-              {activeTab === 'steering' && `${selectedRow ? `${selectedRow.away_team} at ${selectedRow.home_team}` : 'Select a market'} | ${tokenSymbol} enabled`}
+              {activeTab === 'steering' && `${selectedRow ? gameTitle(selectedRow) : 'Select a market'} | ${tokenSymbol} enabled`}
             </p>
           </div>
         </header>
@@ -595,7 +619,7 @@ export function App() {
                     <div className="ticket-head">
                       <div>
                         <p className="eyebrow">{selectedRow.sport} / {marketTypeLabel(selectedRow)}</p>
-                        <h3>{selectedRow.away_team} at {selectedRow.home_team}</h3>
+                        <h3>{gameTitle(selectedRow)}</h3>
                         <p>{selectedRow.contract?.title ?? consensusLabel(selectedRow)}</p>
                       </div>
                       <div className={`ticket-rating ${ratingClass(selectedRow)}`}>
@@ -680,7 +704,7 @@ export function App() {
                     >
                       <span className="rank">{index + 1}</span>
                       <span className="row-game">
-                        <strong>{row.away_team} at {row.home_team}</strong>
+                        <strong>{gameTitle(row)}</strong>
                         <small>{row.sport} / {marketTypeLabel(row)}</small>
                       </span>
                       <span className="row-date">
