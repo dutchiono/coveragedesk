@@ -38,11 +38,11 @@ COVERAGEDESK_TOKEN_CA = (
   os.getenv("COVERAGEDESK_TOKEN_CA")
   or os.getenv("COVERAGE_TOKEN_CA")
   or os.getenv("CVR_TOKEN_CA")
-  or "EJWD6ZTMTE2NdQtwgcLcDFNecueuUhZMxx4WNGospump"
+  or ""
 ).strip()
 
 
-COVERAGEDESK_TOKEN_SYMBOL = os.getenv("COVERAGEDESK_TOKEN_SYMBOL", "$LINE").strip() or "$LINE"
+COVERAGEDESK_TOKEN_SYMBOL = os.getenv("COVERAGEDESK_TOKEN_SYMBOL", "").strip()
 OPENCODE_API_KEY = os.getenv("OPENCODE_API_KEY", "").strip()
 OPENCODE_API_BASE_URL = os.getenv("OPENCODE_API_BASE_URL", "https://api.opencode.ai/v1").rstrip("/")
 OPENCODE_CHAT_MODEL = os.getenv("OPENCODE_CHAT_MODEL") or os.getenv("OPENCODE_MODEL") or "opencode/gpt-5.1-codex"

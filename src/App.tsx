@@ -526,7 +526,7 @@ export function App() {
     return largest === null || gap > largest ? gap : largest
   }, null)
   const protocolEnabled = tokenStats?.enabled === true
-  const tokenSymbol = tokenStats?.token_symbol ?? brand.symbol
+  const tokenSymbol = brand.symbol
   const modeledCount = rows.filter(isModeled).length
   const slateLabel = showAllGames ? 'All dates' : formatSlateKey(slateKey)
 
@@ -1117,7 +1117,7 @@ export function App() {
               {legalModal === 'risk' && (
                 <>
                   <h4>1. Cryptocurrency Risk</h4>
-                  <p>Digital assets, including $LINE, carry significant price volatility and risk of total loss. Crypto tokens are not insured by any government entity.</p>
+                  <p>Digital assets, including {brand.symbol}, carry significant price volatility and risk of total loss. Crypto tokens are not insured by any government entity.</p>
                   <h4>2. Autonomous Agent Risk</h4>
                   <p>The AI betting engine relies on automated scrapers, models, and algorithms. Model predictions can be inaccurate, incomplete, or delayed due to market conditions or data provider outages.</p>
                   <h4>3. Regulatory Compliance</h4>
