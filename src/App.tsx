@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 
 type SportLabel = 'ALL' | 'SPORTS' | 'NCAAF' | 'NFL' | 'FINANCIALS' | 'ECONOMICS' | 'POLITICS' | 'TECH' | 'CULTURE'
 type TabName = 'board' | 'agent' | 'tokenomics' | 'steering'
-const REFRESH_MS = 30 * 1000
+const REFRESH_MS = 10 * 1000
 
 function getBrandInfo() {
   const hostname = typeof window !== 'undefined' ? window.location.hostname.toLowerCase() : ''

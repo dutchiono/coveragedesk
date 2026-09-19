@@ -56,7 +56,7 @@ app = FastAPI(title="LineEdge API")
 
 BLUECHIP_CACHE: dict[str, Any] = {"expires_at": 0.0, "games": {}}
 BOARD_CACHE: dict[str, Any] = {"expires_at": 0.0, "data": None}
-BOARD_CACHE_SECONDS = int(os.getenv("BOARD_CACHE_SECONDS", "20"))
+BOARD_CACHE_SECONDS = int(os.getenv("BOARD_CACHE_SECONDS", "10"))
 AGENT_TASK: asyncio.Task[None] | None = None
 
 
