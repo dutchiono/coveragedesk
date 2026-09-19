@@ -146,29 +146,6 @@ button {
   min-height: 38px;
 }
 
-.nav-tabs {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
-}
-
-.nav-tabs button {
-  min-height: 36px;
-  border: 1px solid #3c4a43;
-  border-radius: 6px;
-  background: #0f1513;
-  color: #d9dfd6;
-  font-size: 0.78rem;
-  font-weight: 900;
-  text-transform: capitalize;
-}
-
-.nav-tabs button.selected {
-  border-color: #d4f07d;
-  background: #d4f07d;
-  color: #18201d;
-}
-
 .segmented {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -243,17 +220,32 @@ button {
   font-size: clamp(1.7rem, 2.7vw, 2.6rem);
 }
 
-.status,
+.live-state,
 .notice {
   border-radius: 6px;
   padding: 10px 12px;
   font-weight: 800;
 }
 
-.status {
-  background: #e4ead6;
+.live-state {
+  display: grid;
+  gap: 2px;
+  min-width: 132px;
+  border: 1px solid #dfe5d5;
+  background: #f8faf2;
   color: #33401d;
   white-space: nowrap;
+}
+
+.live-state span {
+  color: #65705c;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.live-state strong {
+  font-size: 0.92rem;
 }
 
 .notice {
@@ -387,6 +379,11 @@ th {
 
 .breakdown-row:hover {
   background: #fbfaf6;
+}
+
+.breakdown-row.selected {
+  background: #f3f7e8;
+  box-shadow: inset 4px 0 0 #d4f07d;
 }
 
 .breakdown-row strong,

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 
 type SportLabel = 'ALL' | 'NFL' | 'NCAAF'
-type Page = 'board' | 'detail'
 
 type BoardRow = {
   game_id: string
@@ -155,13 +154,6 @@ function breakdownLine(row: BoardRow) {
   return `${marketTypeLabel(row)}: ${consensusLabel(row)} | ${price} | ${model}`
 }
 
-function confidenceLabel(score: number) {
-  if (score >= 84) return 'Strong'
-  if (score >= 72) return 'Good'
-  if (score >= 62) return 'Moderate'
-  return 'Thin'
-}
-
 function consensusLabel(row: BoardRow) {
   if (row.data_source === 'kalshi' && row.contract) {
     const strike = row.market.consensus_spread
@@ -189,21 +181,32 @@ async function fetchBoard(): Promise<BoardResponse> {
 
 function App() {
   const [board, setBoard] = useState<BoardResponse>(emptyBoard)
-  const [activePage, setActivePage] = useState<Page>('board')
   const [selectedSport, setSelectedSport] = useState<SportLabel>('ALL')
   const [sortMode, setSortMode] = useState('cover')
   const [selectedGameId, setSelectedGameId] = useState('')
   const [teamSearch, setTeamSearch] = useState('')
-  const [loading, setLoading] = useState(false)
-
-  async function refreshBoard() {
-    setLoading(true)
-    setBoard(await fetchBoard())
-    setLoading(false)
-  }
+  const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
-    void refreshBoard()
+    let active = true
+
+    async function refresh(showRefreshing = false) {
+      if (showRefreshing) setRefreshing(true)
+      const nextBoard = await fetchBoard()
+      if (!active) return
+      setBoard(nextBoard)
+      if (showRefreshing) setRefreshing(false)
+    }
+
+    void refresh(true)
+    const timer = window.setInterval(() => {
+      void refresh()
+    }, 60000)
+
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
   }, [])
 
   const rows = useMemo(() => {
@@ -228,14 +231,12 @@ function App() {
   }, [board.rows, selectedSport, sortMode, teamSearch])
 
   const selectedRow = rows.find((row) => row.game_id === selectedGameId) ?? rows[0] ?? null
-  const topGap =
-    rows.find((row) => row.metrics.model_market_gap !== null)?.metrics.model_market_gap ??
-    rows.find((row) => row.contract?.price_move !== null)?.contract?.price_move ??
-    null
+  const topEdge = rows[0]?.edge_score ?? null
   const latestUpdate = rows.reduce<string | null>((latest, row) => {
     if (!latest) return row.updated_at
     return new Date(row.updated_at) > new Date(latest) ? row.updated_at : latest
   }, null)
+  const liveLabel = board.source === 'kalshi' ? 'Kalshi live' : board.source === 'preview' ? 'Preview feed' : 'Live feed'
 
   return (
     <main className="shell">
@@ -246,19 +247,6 @@ function App() {
             <p>MarkBets</p>
             <h1>Coverage Desk</h1>
           </div>
-        </div>
-
-        <div className="nav-tabs" role="tablist">
-          {(['board', 'detail'] as Page[]).map((page) => (
-            <button
-              className={activePage === page ? 'selected' : ''}
-              key={page}
-              onClick={() => setActivePage(page)}
-              type="button"
-            >
-              {page}
-            </button>
-          ))}
         </div>
 
         <label className="field">
@@ -300,24 +288,23 @@ function App() {
         </label>
 
         <div className="data-source">
-          <span>Odds backend</span>
-          <strong>{board.source === 'kalshi' ? 'Kalshi live' : board.source === 'preview' ? 'Preview' : 'Live odds'}</strong>
-          <small>{rows.length} markets</small>
-          <em>{board.status}</em>
+          <span>Live feed</span>
+          <strong>{liveLabel}</strong>
+          <small>{refreshing ? 'Updating now' : `Auto-refreshes every minute`}</small>
+          <small>{rows.length.toLocaleString()} markets</small>
         </div>
-
-        <button className="primary" disabled={loading} onClick={refreshBoard} type="button">
-          {loading ? 'Refreshing...' : 'Refresh odds'}
-        </button>
       </aside>
 
       <section className="content">
         <div className="topbar">
           <div>
-            <p className="eyebrow">Backend-ranked live markets</p>
-            <h2>Best lines to cover, spread and total</h2>
+            <p className="eyebrow">Live market board</p>
+            <h2>Best spread and total edges</h2>
           </div>
-          <div className="status">{board.source === 'preview' ? 'Preview mode' : 'API connected'}</div>
+          <div className="live-state">
+            <span>{board.source === 'preview' ? 'Preview' : 'Live'}</span>
+            <strong>{latestUpdate ? formatDate(latestUpdate) : 'Loading'}</strong>
+          </div>
         </div>
 
         <section className="metrics" aria-label="Summary">
@@ -326,8 +313,8 @@ function App() {
             <strong>{rows.length.toLocaleString()}</strong>
           </div>
           <div>
-            <span>Largest move</span>
-            <strong>{formatNumber(topGap)}</strong>
+            <span>Top edge</span>
+            <strong>{formatNumber(topEdge)}</strong>
           </div>
           <div>
             <span>Last update</span>
@@ -339,123 +326,96 @@ function App() {
           </div>
         </section>
 
-        {activePage === 'board' ? (
-          <section className="board-panel">
-            <div className="panel-heading">
-              <div>
-                <h3>Ranked line breakdown</h3>
-                <p>Each card stays under three lines and ranks spread or over/under markets top to bottom.</p>
+        <section className="detail-grid">
+          {selectedRow ? (
+            <>
+              <div className="detail-main">
+                <p className="eyebrow">{selectedRow.sport}</p>
+                <h3>{selectedRow.contract?.title ?? `${selectedRow.away_team} at ${selectedRow.home_team}`}</h3>
+                <p className="team-breakdown">
+                  {selectedRow.away_team} vs {selectedRow.home_team}
+                  <br />
+                  {breakdownLine(selectedRow)}
+                  <br />
+                  {formatWeather(selectedRow)} / {formatWeatherImpact(selectedRow)}
+                </p>
+                <div className="line-chart" aria-label="Opening to current line">
+                  <span>Prev {formatCents(selectedRow.contract?.previous_price ?? selectedRow.market.opening_spread)}</span>
+                  <strong>Last {formatCents(selectedRow.contract?.last_price ?? selectedRow.market.consensus_spread)}</strong>
+                  <span>Move {formatNumber(selectedRow.metrics.line_move)}</span>
+                </div>
               </div>
-            </div>
-
-            <div className="breakdown-list">
-              {rows.length ? (
-                rows.slice(0, 200).map((row, index) => (
-                  <button
-                    className="breakdown-row"
-                    key={row.game_id}
-                    onClick={() => {
-                      setSelectedGameId(row.game_id)
-                      setActivePage('detail')
-                    }}
-                    type="button"
-                  >
-                    <span className="rank">{index + 1}</span>
-                    <span>
-                      <strong>
-                        {row.away_team} vs {row.home_team}
-                      </strong>
-                      <small>
-                        {row.sport} / {marketTypeLabel(row)} / {formatDate(row.commence_time)}
-                      </small>
-                    </span>
-                    <span className="line-copy">{breakdownLine(row)}</span>
-                    <span className="line-copy muted">{formatWeather(row)} / {formatWeatherImpact(row)} / vol {formatVolume(row.contract?.volume_24h)}</span>
-                  </button>
-                ))
-              ) : (
-                <div className="empty">No live markets match that search.</div>
-              )}
-            </div>
-          </section>
-        ) : null}
-
-        {activePage === 'detail' ? (
-          <section className="detail-grid">
-            {selectedRow ? (
-              <>
-                <div className="detail-main">
-                  <p className="eyebrow">{selectedRow.sport}</p>
-                  <h3>{selectedRow.contract?.title ?? `${selectedRow.away_team} at ${selectedRow.home_team}`}</h3>
-                  <p className="team-breakdown">
-                    {selectedRow.away_team} vs {selectedRow.home_team}
-                    <br />
-                    {breakdownLine(selectedRow)}
-                    <br />
-                    {formatWeather(selectedRow)} / {formatWeatherImpact(selectedRow)}
-                  </p>
-                  <div className="line-chart" aria-label="Opening to current line">
-                    <span>Prev {formatCents(selectedRow.contract?.previous_price ?? selectedRow.market.opening_spread)}</span>
-                    <strong>Last {formatCents(selectedRow.contract?.last_price ?? selectedRow.market.consensus_spread)}</strong>
-                    <span>Move {formatNumber(selectedRow.metrics.line_move)}</span>
-                  </div>
+              <div className="detail-stack">
+                <div>
+                  <span>Bid / ask</span>
+                  <strong>
+                    {formatCents(selectedRow.contract?.yes_bid ?? null)} / {formatCents(selectedRow.contract?.yes_ask ?? null)}
+                  </strong>
+                  <small>{selectedRow.market.latest_book ?? '-'}; {formatDate(selectedRow.market.latest_timestamp)}</small>
                 </div>
-                <div className="detail-stack">
-                  <div>
-                    <span>Market source</span>
-                    <strong>{selectedRow.market.latest_book ?? '-'}</strong>
-                    <small>{formatDate(selectedRow.market.latest_timestamp)}</small>
-                  </div>
-                  <div>
-                    <span>Bid / ask</span>
+                <div>
+                  <span>Blue Chip model</span>
+                  <strong>{selectedRow.bluechip?.model_line ?? '-'}</strong>
+                  <small>
+                    {selectedRow.bluechip?.market_line ?? 'No market line'}; gap{' '}
+                    {formatNumber(selectedRow.bluechip?.gap ?? selectedRow.metrics.model_market_gap)}
+                  </small>
+                </div>
+                <div>
+                  <span>Weather impact</span>
+                  <strong>{selectedRow.weather_impact ? `${selectedRow.weather_impact.category} ${formatNumber(selectedRow.weather_impact.score, 0)}/100` : '-'}</strong>
+                  <small>
+                    Total {formatNumber(selectedRow.weather_impact?.total_adjustment ?? null)}; confidence{' '}
+                    {formatNumber(selectedRow.weather_impact?.confidence ?? null, 0)}
+                  </small>
+                </div>
+                <div>
+                  <span>Activity</span>
+                  <strong>{formatVolume(selectedRow.contract?.volume_24h)}</strong>
+                  <small>24h volume, {formatVolume(selectedRow.contract?.open_interest)} open interest</small>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="empty-panel">No market selected yet.</div>
+          )}
+        </section>
+
+        <section className="board-panel">
+          <div className="panel-heading">
+            <div>
+              <h3>Ranked line breakdown</h3>
+              <p>Select a row to update the market breakdown above.</p>
+            </div>
+          </div>
+
+          <div className="breakdown-list">
+            {rows.length ? (
+              rows.slice(0, 200).map((row, index) => (
+                <button
+                  className={`breakdown-row ${selectedRow?.game_id === row.game_id ? 'selected' : ''}`}
+                  key={row.game_id}
+                  onClick={() => setSelectedGameId(row.game_id)}
+                  type="button"
+                >
+                  <span className="rank">{index + 1}</span>
+                  <span>
                     <strong>
-                      {formatCents(selectedRow.contract?.yes_bid ?? null)} / {formatCents(selectedRow.contract?.yes_ask ?? null)}
+                      {row.away_team} vs {row.home_team}
                     </strong>
-                    <small>YES side</small>
-                  </div>
-                  <div>
-                    <span>Activity</span>
-                    <strong>{formatVolume(selectedRow.contract?.volume_24h)}</strong>
-                    <small>24h volume, {formatVolume(selectedRow.contract?.open_interest)} open interest</small>
-                  </div>
-                  <div>
-                    <span>Blue Chip model</span>
-                    <strong>{selectedRow.bluechip?.model_line ?? '-'}</strong>
                     <small>
-                      {selectedRow.bluechip?.market_line ?? 'No market line'}; gap{' '}
-                      {formatNumber(selectedRow.bluechip?.gap ?? selectedRow.metrics.model_market_gap)}
+                      {row.sport} / {marketTypeLabel(row)} / {formatDate(row.commence_time)}
                     </small>
-                  </div>
-                  <div>
-                    <span>Weather</span>
-                    <strong>{selectedRow.bluechip?.weather.condition ?? '-'}</strong>
-                    <small>{formatWeather(selectedRow)}</small>
-                  </div>
-                  <div>
-                    <span>Weather impact</span>
-                    <strong>{selectedRow.weather_impact ? `${selectedRow.weather_impact.category} ${formatNumber(selectedRow.weather_impact.score, 0)}/100` : '-'}</strong>
-                    <small>
-                      Total {formatNumber(selectedRow.weather_impact?.total_adjustment ?? null)}; confidence{' '}
-                      {formatNumber(selectedRow.weather_impact?.confidence ?? null, 0)}
-                    </small>
-                  </div>
-                  <div>
-                    <span>Backend status</span>
-                    <strong>{board.source}</strong>
-                    <small>{board.status}</small>
-                  </div>
-                  <div>
-                    <span>Reliability</span>
-                    <strong>{selectedRow.metrics.confidence_score}</strong>
-                    <small>{confidenceLabel(selectedRow.metrics.confidence_score)}</small>
-                  </div>
-                </div>
-              </>
+                  </span>
+                  <span className="line-copy">{breakdownLine(row)}</span>
+                  <span className="line-copy muted">{formatWeather(row)} / {formatWeatherImpact(row)} / vol {formatVolume(row.contract?.volume_24h)}</span>
+                </button>
+              ))
             ) : (
-              <div className="empty-panel">No game selected yet.</div>
+              <div className="empty">No live markets match that search.</div>
             )}
-          </section>
-        ) : null}
+          </div>
+        </section>
 
       </section>
     </main>
