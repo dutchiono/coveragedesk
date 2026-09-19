@@ -1,0 +1,14 @@
+[Unit]
+Description=CoverageDesk Telegram Assistant & Moderator Bot
+After=network.target coveragedesk-api.service
+
+[Service]
+User=drink
+WorkingDirectory=/srv/drink/apps/coveragedesk/backend
+Environment=TELEGRAM_BOT_TOKEN=8628784169:AAF5yfdCQD6x67FWmfuLx2RPseAZRzPU9mA
+ExecStart=/srv/drink/apps/coveragedesk/backend/.venv/bin/python telegram_bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

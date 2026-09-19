@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 
 type SportLabel = 'ALL' | 'NFL' | 'NCAAF'
 type TabName = 'board' | 'bets'
+type SortDirection = 'asc' | 'desc'
+type SortKey = 'edge' | 'game' | 'date' | 'line' | 'gap' | 'rating' | 'weather' | 'odds'
 const REFRESH_MS = 5 * 60 * 1000
 
 type RatingInfo = {
@@ -80,6 +82,11 @@ type BoardRow = {
     market_spread: number | null
     model_spread: number | null
     gap: number | null
+    weather?: {
+      condition?: string | null
+      temperature_f?: number | null
+      wind_mph?: number | null
+    } | null
     source: string
     url: string
     updated_at: string | null
@@ -168,6 +175,83 @@ function formatCurrency(value: number | null | undefined): string {
   return `${value.toLocaleString('en-US', { maximumFractionDigits: 0 })} $CVR`
 }
 
+function formatCents(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '-'
+  return `${Math.round(value * 100)}c`
+}
+
+function marketTypeLabel(row: BoardRow): string {
+  if (row.bet_type === 'total') return 'Total'
+  if (row.bet_type === 'moneyline') return 'Moneyline'
+  return 'Spread'
+}
+
+function consensusLabel(row: BoardRow): string {
+  if (row.contract?.side_label) return row.contract.side_label
+  if (row.bluechip?.market_team && row.bluechip.market_line) {
+    return `${row.bluechip.market_team} ${row.bluechip.market_line}`
+  }
+  if (row.market.consensus_spread !== null && row.market.consensus_spread !== undefined) {
+    const side = row.market.consensus_spread <= 0 ? row.home_team : row.away_team
+    return `${side} ${formatSigned(row.market.consensus_spread)}`
+  }
+  return `${row.away_team} vs ${row.home_team}`
+}
+
+function modelGap(row: BoardRow): number | null {
+  if (row.metrics.model_market_gap !== null && row.metrics.model_market_gap !== undefined) {
+    return row.metrics.model_market_gap
+  }
+  if (row.bluechip?.gap !== null && row.bluechip?.gap !== undefined) {
+    return row.bluechip.gap
+  }
+  return null
+}
+
+function coverOdds(row: BoardRow): number | null {
+  if (row.contract?.yes_bid !== null && row.contract?.yes_bid !== undefined) {
+    return row.contract.yes_bid
+  }
+  if (row.contract?.last_price !== null && row.contract?.last_price !== undefined) {
+    return row.contract.last_price
+  }
+  return null
+}
+
+function ratingGrade(row: BoardRow): string {
+  return row.rating?.grade ?? 'Even'
+}
+
+function ratingPercent(row: BoardRow): string {
+  const prob = row.contract?.yes_bid ? row.contract.yes_bid / 100.0 : 0.5
+  const est = Math.min(0.98, Math.max(0.02, prob + (row.rating?.edge ?? 0)))
+  return `${(est * 100).toFixed(1)}%`
+}
+
+function ratingClass(row: BoardRow): string {
+  const grade = ratingGrade(row).toLowerCase()
+  if (grade.includes('strong buy') || grade.includes('excellent')) return 'excellent'
+  if (grade.includes('buy') || grade.includes('great')) return 'great'
+  if (grade.includes('good')) return 'good'
+  if (grade.includes('avoid')) return 'avoid'
+  return 'even'
+}
+
+function weatherColumnLabel(row: BoardRow): string {
+  if (row.weather_impact && row.weather_impact.total_adjustment) {
+    return `Impact ${formatSigned(row.weather_impact.total_adjustment)} pts`
+  }
+  if (row.bluechip?.weather?.condition) return row.bluechip.weather.condition
+  return 'Clear'
+}
+
+function compareNumber(a: number | null | undefined, b: number | null | undefined, direction: SortDirection): number {
+  const numA = a === null || a === undefined || !Number.isFinite(a) ? (direction === 'asc' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY) : a
+  const numB = b === null || b === undefined || !Number.isFinite(b) ? (direction === 'asc' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY) : b
+  if (numA === numB) return 0
+  return direction === 'asc' ? numA - numB : numB - numA
+}
+
 export function App() {
   const [activeTab, setActiveTab] = useState<TabName>('board')
   const [rows, setRows] = useState<BoardRow[]>([])
@@ -175,6 +259,9 @@ export function App() {
   const [selectedSport, setSelectedSport] = useState<SportLabel>('ALL')
   const [teamSearch, setTeamSearch] = useState('')
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null)
+  const [expandedRatingId, setExpandedRatingId] = useState<string | null>(null)
+  const [sortKey, setSortKey] = useState<SortKey>('gap')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [refreshing, setRefreshing] = useState(false)
 
   // Tokenomics & Bets State
@@ -255,6 +342,20 @@ export function App() {
     }
   }
 
+  function toggleSort(nextKey: SortKey) {
+    if (nextKey === sortKey) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
+      return
+    }
+    setSortKey(nextKey)
+    setSortDirection(nextKey === 'game' || nextKey === 'date' || nextKey === 'line' ? 'asc' : 'desc')
+  }
+
+  function sortLabel(key: SortKey) {
+    if (key !== sortKey) return ''
+    return sortDirection === 'asc' ? ' ▲' : ' ▼'
+  }
+
   const currentUserHolder = useMemo(() => {
     return holders.find((h) => h.address.toLowerCase() === userAddress.toLowerCase()) || holders[3] || null
   }, [holders, userAddress])
@@ -268,10 +369,38 @@ export function App() {
       const q = teamSearch.toLowerCase()
       list = list.filter((r) => r.away_team.toLowerCase().includes(q) || r.home_team.toLowerCase().includes(q))
     }
-    return list
-  }, [rows, selectedSport, teamSearch])
+
+    return [...list].sort((a, b) => {
+      if (sortKey === 'game') {
+        return (a.away_team + a.home_team).localeCompare(b.away_team + b.home_team) * (sortDirection === 'asc' ? 1 : -1)
+      }
+      if (sortKey === 'date') {
+        return compareNumber(new Date(a.commence_time).getTime(), new Date(b.commence_time).getTime(), sortDirection)
+      }
+      if (sortKey === 'line') {
+        return compareNumber(a.market.consensus_spread, b.market.consensus_spread, sortDirection)
+      }
+      if (sortKey === 'gap') {
+        return compareNumber(modelGap(a), modelGap(b), sortDirection)
+      }
+      if (sortKey === 'odds') {
+        return compareNumber(coverOdds(a), coverOdds(b), sortDirection)
+      }
+      return compareNumber(a.edge_score, b.edge_score, sortDirection)
+    })
+  }, [rows, selectedSport, sortDirection, sortKey, teamSearch])
 
   const selectedRow = filteredRows.find((r) => r.game_id === selectedGameId) || filteredRows[0] || null
+  const topGap = rows.reduce<number | null>((largest, r) => {
+    const gap = modelGap(r)
+    if (gap === null || !Number.isFinite(gap) || gap <= 0) return largest
+    return largest === null || gap > largest ? gap : largest
+  }, null)
+
+  const latestUpdate = rows.reduce<string | null>((latest, r) => {
+    if (!latest) return r.updated_at
+    return new Date(r.updated_at) > new Date(latest) ? r.updated_at : latest
+  }, null)
 
   return (
     <main className="shell">
@@ -306,7 +435,7 @@ export function App() {
 
         <nav className="side-nav">
           <button className={activeTab === 'board' ? 'active' : ''} onClick={() => setActiveTab('board')}>
-            📊 Spread Market Board
+            📊 Coverage Market Board
           </button>
           <button className={activeTab === 'bets' ? 'active' : ''} onClick={() => setActiveTab('bets')}>
             🤖 Agent Bet Ledger ({agentBets.length})
@@ -356,11 +485,10 @@ export function App() {
       <section className="content">
         <div className="topbar">
           <div>
-            <p className="eyebrow">coveragedesk.online • {source} feed</p>
-            <h2>
-              {activeTab === 'board' && 'Consensus Spread & Model Gap Board'}
-              {activeTab === 'bets' && 'Automated Agent Bets & Win Dividend Ledger'}
-            </h2>
+            <p className="eyebrow">
+              {rows.length} lines • Top gap {formatSigned(topGap)} • Blue Chip model • {source} odds • Updated {latestUpdate ? formatDate(latestUpdate) : 'Live'}
+            </p>
+            <h2>Best edges</h2>
           </div>
 
           <div className="topbar-actions">
@@ -373,44 +501,49 @@ export function App() {
         {/* VIEW 1: SPREAD MARKET BOARD */}
         {activeTab === 'board' && (
           <>
-            <section className="metrics" aria-label="Summary">
-              <div>
-                <span>Ranked Markets</span>
-                <strong>{filteredRows.length.toLocaleString()}</strong>
-              </div>
-              <div>
-                <span>Agent Bankroll</span>
-                <strong>{formatCurrency(tokenStats?.bankroll_balance)}</strong>
-              </div>
-              <div>
-                <span>🔥 50% Win Buyback Burn</span>
-                <strong>{formatCurrency(tokenStats?.total_burned)}</strong>
-              </div>
-              <div>
-                <span>💰 50% Win Holder Dividends</span>
-                <strong>{formatCurrency(tokenStats?.total_distributed)}</strong>
-              </div>
-            </section>
-
-            <section className="detail-grid">
+            <section className="detail-grid" aria-label="Selected Market Details">
               {selectedRow ? (
                 <>
                   <div className="detail-main">
-                    <div className="detail-header-row">
-                      <p className="eyebrow">{selectedRow.sport}</p>
-                      {selectedRow.rating && (
-                        <span className={`grade-pill ${selectedRow.rating.grade.toLowerCase().replace(' ', '-')}`}>
-                          {selectedRow.rating.grade}
-                        </span>
-                      )}
+                    <div className="ticket-head">
+                      <div>
+                        <p className="eyebrow">{selectedRow.sport} / {marketTypeLabel(selectedRow).toUpperCase()}</p>
+                        <h3>{selectedRow.away_team} vs {selectedRow.home_team}</h3>
+                        <p className="team-breakdown">{selectedRow.away_team} wins</p>
+                      </div>
+
+                      <div className={`ticket-rating ${ratingClass(selectedRow)}`}>
+                        <span>{ratingGrade(selectedRow)}</span>
+                        <strong>{ratingPercent(selectedRow)}</strong>
+                      </div>
                     </div>
 
-                    <h3>{selectedRow.contract?.title ?? `${selectedRow.away_team} at ${selectedRow.home_team}`}</h3>
-                    <p className="team-breakdown">
-                      {selectedRow.away_team} vs {selectedRow.home_team}
-                      <br />
-                      Consensus Spread: <strong>{selectedRow.market.consensus_spread ?? 'N/A'}</strong> | Model Fair Line: <strong>{selectedRow.model.fair_spread ?? 'N/A'}</strong>
-                    </p>
+                    <div className="ticket-grid" aria-label="Selected market details">
+                      <div>
+                        <span>Line</span>
+                        <strong>{consensusLabel(selectedRow)}</strong>
+                      </div>
+                      <div>
+                        <span>Model</span>
+                        <strong>{selectedRow.bluechip?.model_line ?? 'Unavailable'}</strong>
+                      </div>
+                      <div>
+                        <span>Gap</span>
+                        <strong>{formatSigned(modelGap(selectedRow))}</strong>
+                      </div>
+                      <div>
+                        <span>Odds</span>
+                        <strong>{formatCents(coverOdds(selectedRow))}</strong>
+                      </div>
+                      <div>
+                        <span>Move</span>
+                        <strong>{formatSigned(selectedRow.metrics.line_move)}</strong>
+                      </div>
+                      <div>
+                        <span>Weather</span>
+                        <strong>{weatherColumnLabel(selectedRow)}</strong>
+                      </div>
+                    </div>
 
                     {selectedRow.agent_thoughts && selectedRow.agent_thoughts.length > 0 && (
                       <div className="game-agent-thought">
@@ -422,9 +555,9 @@ export function App() {
 
                   <div className="detail-stack">
                     <div>
-                      <span>Model Gap</span>
-                      <strong>{formatSigned(selectedRow.metrics.model_market_gap)} pts</strong>
-                      <small>{selectedRow.rating?.summary ?? 'Market Edge'}</small>
+                      <span>Why this rating</span>
+                      <strong>{selectedRow.rating?.summary ?? 'Rating explanation unavailable'}</strong>
+                      <small>{selectedRow.rating?.explanation}</small>
                     </div>
 
                     <button
@@ -446,56 +579,120 @@ export function App() {
                   </div>
                 </>
               ) : (
-                <div className="empty-panel">Select a market from the board below.</div>
+                <div className="empty-panel">No market selected yet.</div>
               )}
             </section>
 
             <section className="board-panel">
               <div className="panel-heading">
-                <h3>Ranked Spread & Total Lines</h3>
-                <p>Select a row to inspect agent reasoning &amp; burn $CVR to steer line weights.</p>
+                <div>
+                  <h3>Ranked line breakdown</h3>
+                  <p>Select a row to update the market breakdown above &amp; steer lines with $CVR.</p>
+                </div>
               </div>
 
-              <div className="board-table">
-                <div className="table-header">
-                  <span>Matchup</span>
-                  <span>Sport</span>
-                  <span>Rating</span>
-                  <span>Consensus Spread</span>
-                  <span>Model Gap</span>
-                  <span>Action</span>
-                </div>
-                {filteredRows.map((row) => (
-                  <div
-                    className={`table-row ${selectedRow?.game_id === row.game_id ? 'selected' : ''}`}
-                    key={row.game_id}
-                    onClick={() => setSelectedGameId(row.game_id)}
-                  >
-                    <span>
-                      <strong>{row.away_team}</strong> @ <strong>{row.home_team}</strong>
-                    </span>
-                    <span>{row.sport}</span>
-                    <span>
-                      <span className={`grade-pill mini ${row.rating?.grade.toLowerCase().replace(' ', '-') || 'even'}`}>
-                        {row.rating?.grade || 'Even'}
-                      </span>
-                    </span>
-                    <span>{row.market.consensus_spread ?? 'N/A'}</span>
-                    <span><strong>{formatSigned(row.metrics.model_market_gap)}</strong></span>
-                    <span>
-                      <button
-                        className="mini-steer-btn"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setSteeringTargetGame(row)
-                          setSteerMessage(null)
-                        }}
-                      >
-                        🎯 Steer Line
-                      </button>
-                    </span>
-                  </div>
-                ))}
+              <div className="breakdown-header">
+                <button className={sortKey === 'edge' ? 'active' : ''} onClick={() => toggleSort('edge')} type="button">
+                  #<span>{sortLabel('edge')}</span>
+                </button>
+                <button className={sortKey === 'game' ? 'active' : ''} onClick={() => toggleSort('game')} type="button">
+                  Game<span>{sortLabel('game')}</span>
+                </button>
+                <button className={sortKey === 'date' ? 'active' : ''} onClick={() => toggleSort('date')} type="button">
+                  Date<span>{sortLabel('date')}</span>
+                </button>
+                <button className={sortKey === 'line' ? 'active' : ''} onClick={() => toggleSort('line')} type="button">
+                  Line<span>{sortLabel('line')}</span>
+                </button>
+                <button className={sortKey === 'gap' ? 'active' : ''} onClick={() => toggleSort('gap')} type="button">
+                  Gap<span>{sortLabel('gap')}</span>
+                </button>
+                <button className={sortKey === 'rating' ? 'active' : ''} onClick={() => toggleSort('rating')} type="button">
+                  Rating<span>{sortLabel('rating')}</span>
+                </button>
+                <button className={sortKey === 'weather' ? 'active' : ''} onClick={() => toggleSort('weather')} type="button">
+                  Weather<span>{sortLabel('weather')}</span>
+                </button>
+                <button className={sortKey === 'odds' ? 'active' : ''} onClick={() => toggleSort('odds')} type="button">
+                  Odds<span>{sortLabel('odds')}</span>
+                </button>
+              </div>
+
+              <div className="breakdown-list">
+                {filteredRows.length ? (
+                  filteredRows.map((row, index) => {
+                    const expanded = expandedRatingId === row.game_id
+                    return (
+                      <div className={`breakdown-item ${expanded ? 'expanded' : ''}`} key={row.game_id}>
+                        <div
+                          className={`breakdown-row ${selectedRow?.game_id === row.game_id ? 'selected' : ''}`}
+                          onClick={() => setSelectedGameId(row.game_id)}
+                          role="button"
+                          tabIndex={0}
+                        >
+                          <span className="rank">{index + 1}</span>
+                          <span className="row-game">
+                            <strong>{row.away_team} vs {row.home_team}</strong>
+                            <small>{row.sport} / {marketTypeLabel(row)}</small>
+                          </span>
+                          <span className="row-date">
+                            <span className="mobile-label">Date</span>
+                            <strong>{formatDate(row.commence_time)}</strong>
+                            <small>{row.sport}</small>
+                          </span>
+                          <span className="row-market">
+                            <span className="mobile-label">Line</span>
+                            <strong>{consensusLabel(row)}</strong>
+                            <small>{row.bluechip?.model_line ? `Model ${row.bluechip.model_line}` : 'Model gap unavailable'}</small>
+                          </span>
+                          <span className="row-gap">
+                            <span className="mobile-label">Gap</span>
+                            <strong>{formatSigned(modelGap(row))}</strong>
+                          </span>
+                          <span className="row-rating">
+                            <span className="mobile-label">Rating</span>
+                            <button
+                              className={`rating-pill ${ratingClass(row)}`}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setSelectedGameId(row.game_id)
+                                setExpandedRatingId(expanded ? null : row.game_id)
+                              }}
+                              type="button"
+                            >
+                              <strong>{ratingGrade(row)}</strong>
+                              <span>{ratingPercent(row)}</span>
+                            </button>
+                          </span>
+                          <span className="row-weather">
+                            <span className="mobile-label">Weather</span>
+                            <strong>{weatherColumnLabel(row)}</strong>
+                            <small>{row.bluechip?.weather?.condition ?? 'No weather'}</small>
+                          </span>
+                          <span className="row-odds">
+                            <span className="mobile-label">Odds</span>
+                            <strong>{formatCents(coverOdds(row))}</strong>
+                            <small>Move {formatSigned(row.metrics.line_move)}</small>
+                          </span>
+                        </div>
+                        {expanded ? (
+                          <div className="rating-explanation">
+                            <strong>{row.rating?.summary ?? 'Rating explanation unavailable'}</strong>
+                            <p>{row.rating?.explanation}</p>
+                            <button
+                              className="mini-steer-btn"
+                              onClick={() => setSteeringTargetGame(row)}
+                            >
+                              🎯 Steer This Line ($CVR)
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    )
+                  })
+                ) : (
+                  <div className="empty">No live markets match that search.</div>
+                )}
               </div>
             </section>
           </>
@@ -505,7 +702,7 @@ export function App() {
         {activeTab === 'bets' && (
           <section className="bets-page">
             <div className="panel-heading">
-              <h3>🤖 Agent Bets & Profit Audit Ledger</h3>
+              <h3>🤖 Agent Bets &amp; Profit Audit Ledger</h3>
               <p>50% of net profits from winning bets automatically buy back and burn $CVR, and 50% are distributed to &gt;1% holders.</p>
             </div>
 
