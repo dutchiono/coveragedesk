@@ -302,7 +302,7 @@ async function fetchBoard(): Promise<BoardResponse> {
 
 function App() {
   const [board, setBoard] = useState<BoardResponse>(emptyBoard)
-  const [selectedSport, setSelectedSport] = useState<SportLabel>('ALL')
+  const [selectedSport, setSelectedSport] = useState<SportLabel>('NCAAF')
   const [sortKey, setSortKey] = useState<SortKey>('edge')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [selectedGameId, setSelectedGameId] = useState('')
@@ -449,7 +449,7 @@ function App() {
         <div className="topbar">
           <div>
             <p className="eyebrow">Live market board</p>
-            <h2>Best spread and total edges</h2>
+            <h2>Blue Chip gaps with Kalshi odds</h2>
           </div>
           <div className="live-state">
             <span>{board.source === 'preview' ? 'Preview' : 'Live'}</span>

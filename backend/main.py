@@ -29,6 +29,7 @@ KALSHI_MARKET_SERIES = {
 }
 BLUECHIP_WEEK_URL = os.getenv("BLUECHIP_WEEK_URL", "https://bluechipanalytics.com/college-football/games/2026/week3/")
 BLUECHIP_CACHE_SECONDS = int(os.getenv("BLUECHIP_CACHE_SECONDS", "1800"))
+KALSHI_INCLUDE_UNMODELED = os.getenv("KALSHI_INCLUDE_UNMODELED", "true").lower() in {"1", "true", "yes"}
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("MARKBETS_DB", ROOT / "data" / "markbets.sqlite3"))
 PROJECTIONS_PATH = Path(os.getenv("MARKBETS_PROJECTIONS", ROOT / "data" / "projections.csv"))
@@ -185,6 +186,56 @@ def contract_model_gap(bet_type: str, market: dict[str, Any], bluechip: dict[str
     model_margin = abs(float(model_spread))
     return round(model_margin if team_key(side_team) == team_key(model_team) else -model_margin, 1)
   return None
+
+
+def board_group_key(row: dict[str, Any]) -> str:
+  return "|".join(
+    [
+      row.get("sport") or "",
+      matchup_key(row.get("away_team") or "", row.get("home_team") or ""),
+      row.get("bet_type") or "spread",
+    ]
+  )
+
+
+def best_board_row(current: dict[str, Any] | None, candidate: dict[str, Any]) -> dict[str, Any]:
+  if current is None:
+    return candidate
+  current_rating = current.get("rating") or {}
+  candidate_rating = candidate.get("rating") or {}
+  current_metrics = current.get("metrics") or {}
+  candidate_metrics = candidate.get("metrics") or {}
+  current_contract = current.get("contract") or {}
+  candidate_contract = candidate.get("contract") or {}
+  current_score = (
+    current.get("edge_score") or 0,
+    current_rating.get("probability") or 0,
+    abs(current_metrics.get("model_market_gap") or 0),
+    abs(current_contract.get("price_move") or 0),
+  )
+  candidate_score = (
+    candidate.get("edge_score") or 0,
+    candidate_rating.get("probability") or 0,
+    abs(candidate_metrics.get("model_market_gap") or 0),
+    abs(candidate_contract.get("price_move") or 0),
+  )
+  return candidate if candidate_score > current_score else current
+
+
+def collapse_board_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+  grouped: dict[str, dict[str, Any]] = {}
+  for row in rows:
+    key = board_group_key(row)
+    grouped[key] = best_board_row(grouped.get(key), row)
+  return sorted(
+    grouped.values(),
+    key=lambda row: (
+      row.get("edge_score") or 0,
+      (row.get("metrics") or {}).get("model_market_gap") or 0,
+      abs((row.get("contract") or {}).get("price_move") or 0),
+    ),
+    reverse=True,
+  )
 
 
 def inferred_precipitation(condition: str | None) -> tuple[float, float]:
@@ -528,6 +579,7 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
   captured_at = now_iso()
   board: list[dict[str, Any]] = []
   bluechip_games = await fetch_bluechip_games()
+  raw_count = 0
   async with httpx.AsyncClient(timeout=25) as client:
     for (sport_name, bet_type), series_ticker in KALSHI_MARKET_SERIES.items():
       markets: list[dict[str, Any]] = []
@@ -545,8 +597,13 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
           break
 
       for market in markets:
+        raw_count += 1
         away_team, home_team = extract_matchup(market)
         bluechip = bluechip_games.get(matchup_key(away_team, home_team)) if sport_name == "NCAAF" else None
+        if sport_name == "NCAAF" and bluechip_games and not bluechip:
+          continue
+        if sport_name != "NCAAF" and not KALSHI_INCLUDE_UNMODELED:
+          continue
         yes_bid = dollars_to_float(market.get("yes_bid_dollars"))
         yes_ask = dollars_to_float(market.get("yes_ask_dollars"))
         no_bid = dollars_to_float(market.get("no_bid_dollars"))
@@ -618,15 +675,8 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
           }
         )
 
-  return sorted(
-    board,
-    key=lambda row: (
-      row["edge_score"],
-      row["metrics"]["model_market_gap"] or 0,
-      abs(row["contract"]["price_move"] or 0),
-    ),
-    reverse=True,
-  ), f"Fetched {len(board)} Kalshi football spread/total/moneyline contracts"
+  ranked_rows = collapse_board_rows(board)
+  return ranked_rows, f"Fetched {raw_count} Kalshi contracts; using {len(bluechip_games)} Blue Chip NCAAF games and showing {len(ranked_rows)} ranked lines"
 
 
 def store_snapshots(rows: list[dict[str, Any]]) -> None:
