@@ -984,3 +984,64 @@ button {
   color: #0f172a;
 }
 
+/* CA Badge & Topbar Actions */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ca-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #18201d;
+  color: #fff;
+  border: 1px solid #2b3832;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.ca-label {
+  color: #d4f07d;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.ca-code {
+  font-family: monospace;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+}
+
+.copy-ca-btn {
+  background: #2b3832;
+  color: #d4f07d;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.copy-ca-btn:hover {
+  background: #d4f07d;
+  color: #18201d;
+}
+
+.ca-copy-link {
+  color: #d4f07d !important;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+

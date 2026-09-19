@@ -366,6 +366,16 @@ export function App() {
   const [steerDirective, setSteerDirective] = useState('')
   const [steerMessage, setSteerMessage] = useState<string | null>(null)
   const [legalModal, setLegalModal] = useState<'tos' | 'privacy' | 'risk' | null>(null)
+  const [copiedCA, setCopiedCA] = useState(false)
+
+  const caAddress = tokenStats?.contract_address || '4dmvTMheRkKL3phw2DhRVQpFEqtsDGWvJ1fFTQ6Fpump'
+
+  function handleCopyCA() {
+    void navigator.clipboard.writeText(caAddress)
+    setCopiedCA(true)
+    setTimeout(() => setCopiedCA(false), 2000)
+  }
+
 
   async function loadData(showRefreshing = true) {
     if (showRefreshing) setRefreshing(true)
@@ -565,7 +575,17 @@ export function App() {
               {activeTab === 'steering' && `${selectedRow ? `${selectedRow.away_team} at ${selectedRow.home_team}` : 'Select a market'} | ${tokenSymbol} enabled`}
             </p>
           </div>
+          <div className="topbar-actions">
+            <div className="ca-badge">
+              <span className="ca-label">CA:</span>
+              <code className="ca-code">{caAddress.slice(0, 6)}...{caAddress.slice(-4)}</code>
+              <button type="button" className="copy-ca-btn" onClick={handleCopyCA}>
+                {copiedCA ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+          </div>
         </header>
+
 
         {activeTab === 'board' && (
           <>
@@ -913,9 +933,10 @@ export function App() {
             </section>
           </div>
         )}
-      </section>
+
 
       <footer className="site-footer">
+
         <div className="footer-main">
           <div className="footer-brand">
             <h4>Coverage Desk</h4>
@@ -938,9 +959,10 @@ export function App() {
           <div className="footer-col">
             <h5>Navigation</h5>
             <div className="footer-links">
-              <a href="#lines">Spread Lines</a>
-              <a href="#tokenomics">Tokenomics & Holders</a>
-              <a href="#steering">Holder Steering</a>
+              <a href="#lines" onClick={() => setActiveTab('board')}>Spread Lines</a>
+              <a href="#agent" onClick={() => setActiveTab('agent')}>Agent Ledger</a>
+              <a href="#tokenomics" onClick={() => setActiveTab('tokenomics')}>Tokenomics & Holders</a>
+              <a href="#steering" onClick={() => setActiveTab('steering')}>Holder Steering</a>
             </div>
           </div>
           <div className="footer-col">
@@ -952,12 +974,15 @@ export function App() {
             </div>
           </div>
           <div className="footer-col">
-            <h5>Token</h5>
+            <h5>Token & Contract</h5>
             <div className="footer-links">
               <span>Token Name: <strong>Coverage</strong></span>
               <span>Ticker: <strong>$CVR</strong></span>
-              <span>Burn Pool: <strong>50%</strong> Net Profit</span>
-              <span>Dividends: <strong>50%</strong> to &gt;1% Holders</span>
+              <a href={`https://dexscreener.com/solana/${caAddress}`} target="_blank" rel="noopener noreferrer">DexScreener Chart ↗</a>
+              <a href={`https://solscan.io/token/${caAddress}`} target="_blank" rel="noopener noreferrer">Solscan Explorer ↗</a>
+              <button type="button" onClick={handleCopyCA} className="ca-copy-link">
+                {copiedCA ? '✓ CA Copied!' : 'Copy Contract Address'}
+              </button>
             </div>
           </div>
         </div>
@@ -966,6 +991,8 @@ export function App() {
           <span>Powered by CoverageDesk Agent Engine</span>
         </div>
       </footer>
+      </section>
+
 
       {legalModal && (
         <div className="dialog-backdrop" onClick={() => setLegalModal(null)}>
