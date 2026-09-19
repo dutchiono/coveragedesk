@@ -839,7 +839,12 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
         positive_edge = max(rating.get("edge") or 0, 0)
         edge_score = 0 if rating.get("grade") == "Even" else round(positive_gap * 10 + positive_edge * 10 + weather_score / 10, 2)
 
-        is_arb = bool(yes_bid is not None and no_bid is not None and yes_bid > 0 and no_bid > 0 and (yes_bid + no_bid) < 98.0)
+        is_arb = bool(yes_ask is not None and no_ask is not None and yes_ask > 0 and no_ask > 0 and (yes_ask + no_ask) <= 98.0)
+        kickoff_time = market.get("occurrence_datetime") or market.get("open_time") or market.get("expected_expiration_time")
+        close_time = market.get("close_time") or market.get("expiration_time")
+        resolution_time = market.get("expected_expiration_time") or market.get("expiration_time")
+        is_started = bool(kickoff_time and kickoff_time < captured_at)
+        kalshi_url = f"https://kalshi.com/markets/{ticker}"
 
         board.append(
           {
@@ -850,7 +855,11 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
             "bet_type": bet_type,
             "edge_score": edge_score,
             "is_arb": is_arb,
-            "commence_time": market.get("occurrence_datetime") or market.get("expected_expiration_time"),
+            "is_started": is_started,
+            "commence_time": kickoff_time,
+            "close_time": close_time,
+            "resolution_time": resolution_time,
+            "kalshi_url": kalshi_url,
             "away_team": away_team,
             "home_team": home_team,
             "market": {
@@ -940,14 +949,19 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
             volume_24h = fp_to_float(market.get("volume_24h_fp"))
             open_interest = fp_to_float(market.get("open_interest_fp"))
 
-            is_arb = bool(yes_bid is not None and no_bid is not None and yes_bid > 0 and no_bid > 0 and (yes_bid + no_bid) < 98.0)
+            is_arb = bool(yes_ask is not None and no_ask is not None and yes_ask > 0 and no_ask > 0 and (yes_ask + no_ask) <= 98.0)
+            kickoff_time = market.get("open_time") or market.get("expected_expiration_time") or captured_at
+            close_time = market.get("close_time") or market.get("expiration_time")
+            resolution_time = market.get("expected_expiration_time") or market.get("expiration_time")
+            is_started = bool(kickoff_time and kickoff_time < captured_at)
+            kalshi_url = f"https://kalshi.com/markets/{ticker}"
 
             title = (market.get("title") or ev.get("title") or "").replace("?", "")
             side_label = market.get("yes_sub_title") or market.get("title") or title
 
             edge_score = 40.0
             if is_arb:
-              edge_score = round(150.0 + (98.0 - (yes_bid + no_bid)) * 5, 2)
+              edge_score = round(150.0 + (98.0 - (yes_ask + no_ask)) * 5, 2)
             elif volume > 5000:
               edge_score = round(80.0 + min(volume / 1000, 40), 2)
             elif price_move and abs(price_move) > 5:
@@ -963,7 +977,11 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
                 "bet_type": "binary_outcome",
                 "edge_score": edge_score,
                 "is_arb": is_arb,
-                "commence_time": market.get("expiration_time") or market.get("expected_expiration_time") or captured_at,
+                "is_started": is_started,
+                "commence_time": kickoff_time,
+                "close_time": close_time,
+                "resolution_time": resolution_time,
+                "kalshi_url": kalshi_url,
                 "away_team": title,
                 "home_team": raw_cat,
                 "market": {
@@ -996,13 +1014,13 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
                 "weather_impact": None,
                 "rating": {
                   "grade": "Arbitrage" if is_arb else "Market",
-                  "summary": f"Orderbook Arb Opportunity ({yes_bid}c / {no_bid}c)" if is_arb else f"Kalshi {raw_cat} Market",
+                  "summary": f"Risk-Free Orderbook Arb (Ask {yes_ask}c + {no_ask}c)" if is_arb else f"Kalshi {raw_cat} Market",
                   "edge": edge_score,
                 },
                 "metrics": {
                   "model_market_gap": None,
                   "line_move": price_move,
-                  "confidence_score": 85 if is_arb else 60,
+                  "confidence_score": 95 if is_arb else 60,
                 },
                 "updated_at": market.get("updated_time") or captured_at,
               }

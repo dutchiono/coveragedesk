@@ -31,9 +31,13 @@ type BoardRow = {
   category?: string
   raw_category?: string
   is_arb?: boolean
-  bet_type?: 'spread' | 'total'
-  edge_score?: number
+  is_started?: boolean
   commence_time: string
+  close_time?: string
+  resolution_time?: string
+  kalshi_url?: string
+  bet_type?: 'spread' | 'total' | 'binary_outcome'
+  edge_score?: number
   away_team: string
   home_team: string
   market: {
@@ -384,6 +388,7 @@ export function App() {
   const [selectedSport, setSelectedSport] = useState<SportLabel>('NCAAF')
   const [teamSearch, setTeamSearch] = useState('')
   const [showAllGames, setShowAllGames] = useState(false)
+  const [showStarted, setShowStarted] = useState(false)
   const [selectedGameId, setSelectedGameId] = useState<string>('')
   const [refreshing, setRefreshing] = useState(false)
 
@@ -479,6 +484,7 @@ export function App() {
 
   const rows = useMemo(() => {
     return baseRows
+      .filter((row) => showStarted || !row.is_started)
       .filter((row) => showAllGames || (selectedSport !== 'SPORTS' && selectedSport !== 'NCAAF' && selectedSport !== 'NFL') || localDateKey(row.commence_time) === slateKey)
       .sort((a, b) => {
         const aArb = a.is_arb ? 1 : 0
@@ -491,7 +497,7 @@ export function App() {
         const bEdge = b.edge_score ?? Math.abs(modelGap(b) ?? 0) * 20
         return bEdge - aEdge || Math.abs(modelGap(b) ?? 0) - Math.abs(modelGap(a) ?? 0)
       })
-  }, [baseRows, selectedSport, showAllGames, slateKey])
+  }, [baseRows, selectedSport, showAllGames, showStarted, slateKey])
 
   const selectedRow = rows.find((row) => row.game_id === selectedGameId) ?? rows[0] ?? null
   const openBets = agentBets.filter((bet) => bet.status === 'OPEN').length
@@ -572,6 +578,15 @@ export function App() {
                 />
                 <span>Include all dates</span>
               </label>
+
+              <label className="checkbox-field">
+                <input
+                  checked={showStarted}
+                  onChange={(event) => setShowStarted(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>Include in-play / started</span>
+              </label>
             </div>
           </>
         )}
@@ -596,7 +611,7 @@ export function App() {
       <section className="content">
         <header className="topbar">
           <div>
-            <p className="eyebrow">coveragedesk.online</p>
+            <p className="eyebrow">{brand.domain}</p>
             <h2>
               {activeTab === 'board' && `${selectedSport === 'ALL' ? 'All Kalshi & Sports' : selectedSport} board`}
               {activeTab === 'agent' && 'Agent ledger'}
@@ -641,14 +656,20 @@ export function App() {
                   <div className="detail-main">
                     <div className="ticket-head">
                       <div>
-                        <p className="eyebrow">{selectedRow.sport} / {marketTypeLabel(selectedRow)}</p>
+                        <p className="eyebrow">{selectedRow.sport} / {marketTypeLabel(selectedRow)} {selectedRow.is_started && '🔴 IN-PLAY'}</p>
                         <h3>{gameTitle(selectedRow)}</h3>
                         <p>{selectedRow.contract?.title ?? consensusLabel(selectedRow)}</p>
                       </div>
-                      <div className={`ticket-rating ${ratingClass(selectedRow)}`}>
-                        <span>{ratingLabel(selectedRow)}</span>
+                      <a
+                        className={`ticket-rating ${ratingClass(selectedRow)}`}
+                        href={selectedRow.kalshi_url || `https://kalshi.com/markets/${selectedRow.game_id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Click to view and place bet on Kalshi.com"
+                      >
+                        <span>{ratingLabel(selectedRow)} ↗</span>
                         <strong>{ratingValue(selectedRow)}</strong>
-                      </div>
+                      </a>
                     </div>
 
                     <div className="ticket-grid" aria-label="Selected market details">
@@ -669,12 +690,12 @@ export function App() {
                         <strong>{formatCents(coverPrice(selectedRow))}</strong>
                       </div>
                       <div>
-                        <span>Move</span>
-                        <strong>{formatSigned(selectedRow.metrics.line_move)}</strong>
+                        <span>Bet Closes</span>
+                        <strong>{formatDate(selectedRow.close_time || selectedRow.commence_time)}</strong>
                       </div>
                       <div>
-                        <span>Weather</span>
-                        <strong>{weatherLabel(selectedRow)}</strong>
+                        <span>Resolves</span>
+                        <strong>{formatDate(selectedRow.resolution_time)}</strong>
                       </div>
                     </div>
                   </div>
@@ -683,15 +704,24 @@ export function App() {
                     <div>
                       <span>Source</span>
                       <strong>{selectedRow.market.latest_book ?? selectedRow.data_source ?? 'Market feed'}</strong>
-                      <small>{selectedRow.market.book_count} books in consensus</small>
+                      <small>{selectedRow.is_started ? '🔴 In-Play / Game Started' : '🟢 Open for Wagers'}</small>
                       <small>Updated {formatDate(selectedRow.updated_at)}</small>
                     </div>
                     <div>
                       <span>Market read</span>
-                      <strong>{isModeled(selectedRow) ? (selectedRow.rating?.summary ?? 'Modeled edge') : 'No model benchmark'}</strong>
-                      <small>{isModeled(selectedRow) ? (selectedRow.rating?.explanation ?? `Model gap ${formatSigned(modelGap(selectedRow))}`) : 'Hidden from rating math until Blue Chip/model data exists.'}</small>
+                      <strong>{isModeled(selectedRow) ? (selectedRow.rating?.summary ?? 'Modeled edge') : (selectedRow.rating?.summary ?? 'No model benchmark')}</strong>
+                      <small>{isModeled(selectedRow) ? (selectedRow.rating?.explanation ?? `Model gap ${formatSigned(modelGap(selectedRow))}`) : 'Kalshi prediction market pricing'}</small>
                       <small>Weather {weatherLabel(selectedRow)}</small>
                     </div>
+                    <a
+                      className="button primary-button"
+                      href={selectedRow.kalshi_url || `https://kalshi.com/markets/${selectedRow.game_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ textAlign: 'center', marginTop: '4px', textDecoration: 'none' }}
+                    >
+                      ⚡ View & Place Wager on Kalshi ↗
+                    </a>
                   </div>
                 </>
               ) : (
@@ -746,10 +776,18 @@ export function App() {
                       </span>
                       <span className="row-rating">
                         <span className="mobile-label">Read</span>
-                        <span className={`rating-pill ${ratingClass(row)}`}>
-                          <strong>{ratingLabel(row)}</strong>
+                        <a
+                          className={`rating-pill ${ratingClass(row)}`}
+                          href={row.kalshi_url || `https://kalshi.com/markets/${row.game_id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          title="Click to open market directly on Kalshi.com"
+                          style={{ textDecoration: 'none' }}
+                        >
+                          <strong>{ratingLabel(row)} ↗</strong>
                           <span>{ratingValue(row)}</span>
-                        </span>
+                        </a>
                       </span>
                       <span className="row-weather">
                         <span className="mobile-label">Weather</span>
