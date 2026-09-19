@@ -175,6 +175,10 @@ button {
   gap: 8px;
 }
 
+.segmented.three {
+  grid-template-columns: repeat(3, 1fr);
+}
+
 .segmented button,
 .primary,
 .secondary {

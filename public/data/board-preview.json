@@ -1,0 +1,34 @@
+{
+  "generated_at": "2026-09-19T14:10:00Z",
+  "source": "preview",
+  "status": "Preview data. Backend needs ODDS_API_KEY for live markets.",
+  "rows": [
+    {
+      "game_id": "cfb_2026_09_19_byu_csu",
+      "sport": "NCAAF",
+      "commence_time": "2026-09-19T23:30:00Z",
+      "away_team": "Colorado State",
+      "home_team": "BYU",
+      "market": {
+        "consensus_spread": -17.5,
+        "best_favorite_line": -17.0,
+        "best_underdog_line": 18.0,
+        "opening_spread": -21.0,
+        "book_count": 8,
+        "latest_book": "Consensus",
+        "latest_timestamp": "2026-09-19T14:10:00Z"
+      },
+      "model": {
+        "fair_spread": -22.0,
+        "source": "seed_projection",
+        "updated_at": "2026-09-19T14:08:00Z"
+      },
+      "metrics": {
+        "model_market_gap": -4.5,
+        "line_move": 3.5,
+        "confidence_score": 88
+      },
+      "updated_at": "2026-09-19T14:10:00Z"
+    }
+  ]
+}

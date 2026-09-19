@@ -1,39 +1,51 @@
 # MarkBets Coverage Desk
 
-Static React/Vite dashboard for NFL and NCAA spread coverage analysis.
+React/Vite dashboard plus FastAPI backend for NFL and NCAA spread-market monitoring.
 
 ## What is included
 
-- Live spread ingestion from The Odds API
+- Backend spread ingestion from The Odds API
 - NFL and NCAA FBS sport keys
 - Multi-book consensus spread by game
-- No-vig market probability
-- Managed team power ratings with injury/form adjustments
-- Separate NFL/NCAAF home-field controls
-- Model fair spread, model edge, coverage probability, and reliability score
+- SQLite line-history storage
+- Consensus spread, best available lines, opening/current movement
+- Optional backend model projection CSV
+- Model-vs-market gap and reliability score
 - Game-detail view
-- Historical model-performance and probability-band view
-- Demo mode without an API key
-- CSV export
+- Preview fallback when backend/API key is unavailable
 
 ## Data updates
 
-Ratings and historical calibration data are managed in GitHub, not uploaded through the browser.
+Model projections are managed by the backend, not uploaded through the browser.
 
 Agents should update these files in the repo and push to `main`:
 
 ```text
-public/data/ratings.csv
-public/data/historical_training.csv
+backend/data/projections.csv
 ```
 
-The app fetches those CSV files when it loads. The box deploy cron should then pull, rebuild, and publish the latest data.
+The backend reads that file and compares it with live sportsbook consensus rows.
+
+Required environment for live odds:
+
+```text
+ODDS_API_KEY=...
+```
 
 ## Local development
 
 ```bash
 npm install
 npm run dev
+```
+
+Backend:
+
+```bash
+cd backend
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+ODDS_API_KEY=... .venv/bin/uvicorn main:app --host 127.0.0.1 --port 8799
 ```
 
 ## Production build
@@ -50,10 +62,22 @@ dist
 
 ## Deploy on the box
 
-The app is static, so it fits the existing deploy helper:
+The frontend still fits the existing deploy helper:
 
 ```bash
 /srv/drink/bin/add-site.sh markbets markbets.miono.live https://github.com/dutchiono/markbets.git main "npm run build" dist
+```
+
+The backend should run as a local service on `127.0.0.1:8799`, and nginx should proxy:
+
+```nginx
+location /api/ {
+    proxy_pass http://127.0.0.1:8799/api/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
 ```
 
 For wildcard hosting, nginx and DNS still need root/admin setup:
@@ -74,8 +98,4 @@ Wildcard HTTPS requires DNS-01 validation, not the normal HTTP certbot flow.
 
 ## Secrets
 
-Do not commit API keys or `.env` files. The browser app only uses an Odds API key pasted by the user for the current session.
-
-## Current limitation
-
-If The Odds API blocks browser-origin requests, add a small backend proxy and point nginx at it for `/api`. The dashboard is otherwise ready as a static build.
+Do not commit API keys or `.env` files. `ODDS_API_KEY` belongs on the server.
