@@ -150,6 +150,14 @@ async def reply(chat_id: int | str, text: str) -> None:
   await telegram("sendMessage", {"chat_id": chat_id, "text": text[:3900]})
 
 
+def command_payload(text: str, command: str) -> str | None:
+  pattern = rf"^/{re.escape(command)}(?:@\w+)?(?:\s+(.*))?$"
+  match = re.match(pattern, text, re.S)
+  if not match:
+    return None
+  return (match.group(1) or "").strip()
+
+
 async def main() -> None:
   if not BOT_TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
@@ -177,12 +185,14 @@ async def main() -> None:
       if chat_id not in ALLOWED_CHAT_IDS:
         await reply(chat_id, "Not authorized.")
         continue
-      if text.startswith("/id"):
+      if command_payload(text, "id") is not None:
         await reply(chat_id, f"chat id: {chat_id}")
         continue
-      if text.startswith("/adjust "):
-        request = text.removeprefix("/adjust ").strip()
-      else:
+      request = command_payload(text, "adjust")
+      if request is None:
+        await reply(chat_id, "Send /adjust followed by the small repo change you want.")
+        continue
+      if not request:
         await reply(chat_id, "Send /adjust followed by the small repo change you want.")
         continue
 
