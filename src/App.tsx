@@ -186,12 +186,37 @@ function weatherSortValue(row: BoardRow) {
   return Math.abs(row.weather_impact?.total_adjustment ?? 0)
 }
 
+function normalizeTeam(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/\bst[.]?\b/g, 'state')
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function teamTokens(value: string) {
+  return normalizeTeam(value).split(' ').filter(Boolean)
+}
+
 function marketGroupKey(row: BoardRow) {
   const teams = [row.away_team, row.home_team]
-    .map((team) => team.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim())
+    .map(normalizeTeam)
     .sort()
     .join('|')
   return `${row.sport}|${teams}|${row.bet_type ?? 'spread'}`
+}
+
+function rowMatchesSearch(row: BoardRow, rawQuery: string, exactTeamKeys: Set<string>) {
+  const query = normalizeTeam(rawQuery)
+  if (!query) return true
+  const away = normalizeTeam(row.away_team)
+  const home = normalizeTeam(row.home_team)
+  if (exactTeamKeys.has(query)) return away === query || home === query
+
+  const queryTokens = teamTokens(query)
+  const matchupText = `${away} ${home}`
+  return queryTokens.every((token) => matchupText.includes(token))
 }
 
 function bestMarketRow(current: BoardRow | undefined, candidate: BoardRow) {
@@ -310,11 +335,14 @@ function App() {
   const rows = useMemo(() => {
     const sportRows =
       selectedSport === 'ALL' ? board.rows : board.rows.filter((row) => row.sport === selectedSport)
-    const query = teamSearch.trim().toLowerCase()
+    const exactTeamKeys = new Set<string>()
+    for (const row of sportRows) {
+      exactTeamKeys.add(normalizeTeam(row.away_team))
+      exactTeamKeys.add(normalizeTeam(row.home_team))
+    }
+    const query = teamSearch.trim()
     const searchedRows = query
-      ? sportRows.filter((row) =>
-          `${row.away_team} ${row.home_team} ${row.contract?.title ?? ''}`.toLowerCase().includes(query),
-        )
+      ? sportRows.filter((row) => rowMatchesSearch(row, query, exactTeamKeys))
       : sportRows
     const grouped = new Map<string, BoardRow>()
     for (const row of searchedRows) {
@@ -413,7 +441,7 @@ function App() {
           <span>Live feed</span>
           <strong>{liveLabel}</strong>
           <small>{refreshing ? 'Updating now' : `Auto-refreshes every 5 minutes`}</small>
-          <small>{rows.length.toLocaleString()} markets</small>
+          <small>{rows.length.toLocaleString()} ranked lines</small>
         </div>
       </aside>
 
@@ -431,7 +459,7 @@ function App() {
 
         <section className="metrics" aria-label="Summary">
           <div>
-            <span>Markets</span>
+            <span>Ranked lines</span>
             <strong>{rows.length.toLocaleString()}</strong>
           </div>
           <div>
