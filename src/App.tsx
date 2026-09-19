@@ -2,14 +2,14 @@ import { useEffect, useMemo, useState } from 'react'
 
 type SportLabel = 'ALL' | 'NFL' | 'NCAAF'
 type SortDirection = 'asc' | 'desc'
-type SortKey = 'edge' | 'game' | 'date' | 'line' | 'gap' | 'confidence' | 'odds' | 'move'
+type SortKey = 'edge' | 'game' | 'date' | 'line' | 'gap' | 'rating' | 'odds' | 'move'
 const REFRESH_MS = 5 * 60 * 1000
 
 type BoardRow = {
   game_id: string
   data_source?: 'sportsbook' | 'kalshi'
   sport: 'NFL' | 'NCAAF'
-  bet_type?: 'spread' | 'total'
+  bet_type?: 'spread' | 'total' | 'moneyline'
   edge_score?: number
   commence_time: string
   away_team: string
@@ -92,6 +92,13 @@ type BoardRow = {
     line_move: number | null
     confidence_score: number
   }
+  rating?: {
+    probability: number | null
+    grade: 'Excellent' | 'Great' | 'Good' | 'Even'
+    edge: number | null
+    summary: string
+    reasons: string[]
+  }
   updated_at: string
 }
 
@@ -156,6 +163,7 @@ function formatWeatherImpact(row: BoardRow) {
 }
 
 function marketTypeLabel(row: BoardRow) {
+  if (row.bet_type === 'moneyline') return 'Moneyline'
   return row.bet_type === 'total' ? 'Over/under' : 'Spread'
 }
 
@@ -164,15 +172,19 @@ function breakdownLine(row: BoardRow) {
   return `${marketTypeLabel(row)}: ${consensusLabel(row)} | odds ${formatCents(coverOdds(row))} | ${model}`
 }
 
-function confidenceLabel(score: number) {
-  if (score >= 84) return 'Strong'
-  if (score >= 72) return 'Good'
-  if (score >= 62) return 'Moderate'
-  return 'Thin'
+function ratingGrade(row: BoardRow) {
+  return row.rating?.grade ?? 'Even'
 }
 
-function confidenceClass(score: number) {
-  return confidenceLabel(score).toLowerCase()
+function ratingClass(row: BoardRow) {
+  return ratingGrade(row).toLowerCase()
+}
+
+function ratingPercent(row: BoardRow) {
+  const probability = row.rating?.probability
+  return probability === null || probability === undefined || !Number.isFinite(probability)
+    ? '-'
+    : `${probability.toFixed(1)}%`
 }
 
 function consensusLabel(row: BoardRow) {
@@ -231,6 +243,7 @@ function App() {
   const [sortKey, setSortKey] = useState<SortKey>('edge')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [selectedGameId, setSelectedGameId] = useState('')
+  const [expandedRatingId, setExpandedRatingId] = useState('')
   const [teamSearch, setTeamSearch] = useState('')
   const [refreshing, setRefreshing] = useState(false)
 
@@ -275,8 +288,8 @@ function App() {
         result = compareNumber(lineValue(a), lineValue(b), sortDirection)
       } else if (sortKey === 'gap') {
         result = compareNumber(modelGap(a), modelGap(b), sortDirection)
-      } else if (sortKey === 'confidence') {
-        result = compareNumber(a.metrics.confidence_score, b.metrics.confidence_score, sortDirection)
+      } else if (sortKey === 'rating') {
+        result = compareNumber(a.rating?.probability, b.rating?.probability, sortDirection)
       } else if (sortKey === 'odds') {
         result = compareNumber(coverOdds(a), coverOdds(b), sortDirection)
       } else if (sortKey === 'move') {
@@ -415,6 +428,11 @@ function App() {
               </div>
               <div className="detail-stack">
                 <div>
+                  <span>Rating</span>
+                  <strong>{ratingGrade(selectedRow)} {ratingPercent(selectedRow)}</strong>
+                  <small>{selectedRow.rating?.summary ?? 'Rating explanation unavailable'}</small>
+                </div>
+                <div>
                   <span>Odds</span>
                   <strong>{formatCents(coverOdds(selectedRow))}</strong>
                   <small>Current price for this line; move {formatSigned(selectedRow.metrics.line_move)}</small>
@@ -464,8 +482,8 @@ function App() {
             <button className={sortKey === 'gap' ? 'active' : ''} onClick={() => toggleSort('gap')} type="button">
               Gap<span>{sortLabel('gap')}</span>
             </button>
-            <button className={sortKey === 'confidence' ? 'active' : ''} onClick={() => toggleSort('confidence')} type="button">
-              Confidence<span>{sortLabel('confidence')}</span>
+            <button className={sortKey === 'rating' ? 'active' : ''} onClick={() => toggleSort('rating')} type="button">
+              Rating<span>{sortLabel('rating')}</span>
             </button>
             <button className={sortKey === 'odds' ? 'active' : ''} onClick={() => toggleSort('odds')} type="button">
               Odds<span>{sortLabel('odds')}</span>
@@ -474,49 +492,74 @@ function App() {
 
           <div className="breakdown-list">
             {rows.length ? (
-              rows.slice(0, 200).map((row, index) => (
-                <button
-                  className={`breakdown-row ${selectedRow?.game_id === row.game_id ? 'selected' : ''}`}
-                  key={row.game_id}
-                  onClick={() => setSelectedGameId(row.game_id)}
-                  type="button"
-                >
-                  <span className="rank">{index + 1}</span>
-                  <span className="row-game">
-                    <strong>
-                      {row.away_team} vs {row.home_team}
-                    </strong>
-                    <small>
-                      {row.sport} / {marketTypeLabel(row)}
-                    </small>
-                  </span>
-                  <span className="row-date">
-                    <span className="mobile-label">Date</span>
-                    <strong>{formatDate(row.commence_time)}</strong>
-                    <small>{row.sport}</small>
-                  </span>
-                  <span className="row-market">
-                    <span className="mobile-label">Line</span>
-                    <strong>{consensusLabel(row)}</strong>
-                    <small>{row.bluechip?.model_line ? `Model ${row.bluechip.model_line}` : 'Model gap unavailable'}</small>
-                  </span>
-                  <span className="row-gap">
-                    <span className="mobile-label">Gap</span>
-                    <strong>{formatSigned(modelGap(row))}</strong>
-                  </span>
-                  <span className="row-confidence">
-                    <span className="mobile-label">Confidence</span>
-                    <span className={`confidence ${confidenceClass(row.metrics.confidence_score)}`}>
-                      {confidenceLabel(row.metrics.confidence_score)}
-                    </span>
-                  </span>
-                  <span className="row-odds">
-                    <span className="mobile-label">Odds</span>
-                    <strong>{formatCents(coverOdds(row))}</strong>
-                    <small>Move {formatSigned(row.metrics.line_move)}</small>
-                  </span>
-                </button>
-              ))
+              rows.slice(0, 200).map((row, index) => {
+                const expanded = expandedRatingId === row.game_id
+                return (
+                  <div className={`breakdown-item ${expanded ? 'expanded' : ''}`} key={row.game_id}>
+                    <div
+                      className={`breakdown-row ${selectedRow?.game_id === row.game_id ? 'selected' : ''}`}
+                      onClick={() => setSelectedGameId(row.game_id)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') setSelectedGameId(row.game_id)
+                      }}
+                      role="button"
+                      tabIndex={0}
+                    >
+                      <span className="rank">{index + 1}</span>
+                      <span className="row-game">
+                        <strong>
+                          {row.away_team} vs {row.home_team}
+                        </strong>
+                        <small>
+                          {row.sport} / {marketTypeLabel(row)}
+                        </small>
+                      </span>
+                      <span className="row-date">
+                        <span className="mobile-label">Date</span>
+                        <strong>{formatDate(row.commence_time)}</strong>
+                        <small>{row.sport}</small>
+                      </span>
+                      <span className="row-market">
+                        <span className="mobile-label">Line</span>
+                        <strong>{consensusLabel(row)}</strong>
+                        <small>{row.bluechip?.model_line ? `Model ${row.bluechip.model_line}` : 'Model gap unavailable'}</small>
+                      </span>
+                      <span className="row-gap">
+                        <span className="mobile-label">Gap</span>
+                        <strong>{formatSigned(modelGap(row))}</strong>
+                      </span>
+                      <span className="row-rating">
+                        <span className="mobile-label">Rating</span>
+                        <button
+                          className={`rating-pill ${ratingClass(row)}`}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setSelectedGameId(row.game_id)
+                            setExpandedRatingId(expanded ? '' : row.game_id)
+                          }}
+                          type="button"
+                        >
+                          <strong>{ratingGrade(row)}</strong>
+                          <span>{ratingPercent(row)}</span>
+                        </button>
+                      </span>
+                      <span className="row-odds">
+                        <span className="mobile-label">Odds</span>
+                        <strong>{formatCents(coverOdds(row))}</strong>
+                        <small>Move {formatSigned(row.metrics.line_move)}</small>
+                      </span>
+                    </div>
+                    {expanded ? (
+                      <div className="rating-explanation">
+                        <strong>{row.rating?.summary ?? 'Rating explanation unavailable'}</strong>
+                        {(row.rating?.reasons ?? []).map((reason) => (
+                          <p key={reason}>{reason}</p>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              })
             ) : (
               <div className="empty">No live markets match that search.</div>
             )}

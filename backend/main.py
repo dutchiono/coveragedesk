@@ -1,6 +1,7 @@
 import csv
 import asyncio
 import html
+import math
 import os
 import re
 import sqlite3
@@ -21,8 +22,10 @@ KALSHI_SPREAD_SERIES = {"NFL": "KXNFLSPREAD", "NCAAF": "KXNCAAFSPREAD"}
 KALSHI_MARKET_SERIES = {
   ("NFL", "spread"): "KXNFLSPREAD",
   ("NFL", "total"): "KXNFLTOTAL",
+  ("NFL", "moneyline"): "KXNFLGAME",
   ("NCAAF", "spread"): "KXNCAAFSPREAD",
   ("NCAAF", "total"): "KXNCAAFTOTAL",
+  ("NCAAF", "moneyline"): "KXNCAAFGAME",
 }
 BLUECHIP_WEEK_URL = os.getenv("BLUECHIP_WEEK_URL", "https://bluechipanalytics.com/college-football/games/2026/week3/")
 BLUECHIP_CACHE_SECONDS = int(os.getenv("BLUECHIP_CACHE_SECONDS", "1800"))
@@ -116,6 +119,9 @@ def extract_matchup(market: dict[str, Any]) -> tuple[str, str]:
   match = re.search(r"in the (.+?) vs (.+?) (?:college football|Pro Football)", rules)
   if match:
     return match.group(1), match.group(2)
+  match = re.search(r"wins the (.+?) vs (.+?) (?:college football|Pro Football) game", rules)
+  if match:
+    return match.group(1), match.group(2)
   title = (market.get("title") or "").replace("?", "")
   team = title.split(" wins", 1)[0] or market.get("yes_sub_title") or "Kalshi"
   return team, "Market"
@@ -145,14 +151,17 @@ def opponent_team(away_team: str, home_team: str, team: str | None) -> str | Non
 
 
 def contract_side_team(market: dict[str, Any]) -> str | None:
-  label = market.get("yes_sub_title") or market.get("title") or ""
+  subtitle = clean_text(market.get("yes_sub_title"))
+  if subtitle:
+    return subtitle
+  label = market.get("title") or ""
   match = re.match(r"(.+?) wins\b", label.replace("?", ""), re.I)
   return clean_text(match.group(1)) if match else None
 
 
 def contract_model_gap(bet_type: str, market: dict[str, Any], bluechip: dict[str, Any] | None, impact: dict[str, Any] | None) -> float | None:
   threshold = dollars_to_float(market.get("floor_strike"))
-  if threshold is None:
+  if threshold is None and bet_type != "moneyline":
     return None
   if bet_type == "spread" and bluechip:
     model_spread = bluechip.get("model_spread")
@@ -167,6 +176,14 @@ def contract_model_gap(bet_type: str, market: dict[str, Any], bluechip: dict[str
     adjusted_total = float(impact["adjusted_total"])
     label = f"{market.get('yes_sub_title') or ''} {market.get('title') or ''}".lower()
     return round(threshold - adjusted_total, 1) if "under" in label else round(adjusted_total - threshold, 1)
+  if bet_type == "moneyline" and bluechip:
+    model_spread = bluechip.get("model_spread")
+    model_team = bluechip.get("model_team")
+    side_team = contract_side_team(market)
+    if model_spread is None or not model_team or not side_team:
+      return None
+    model_margin = abs(float(model_spread))
+    return round(model_margin if team_key(side_team) == team_key(model_team) else -model_margin, 1)
   return None
 
 
@@ -263,6 +280,70 @@ def gap_confidence(model_gap: float | None) -> int:
   if model_gap >= 1:
     return 64
   return 52
+
+
+def rating_grade(probability: float | None, edge: float | None, has_model: bool) -> str:
+  if probability is None or not has_model:
+    return "Even"
+  if edge is not None and edge < 0:
+    return "Even"
+  if probability >= 68 and (edge is None or edge >= 4):
+    return "Excellent"
+  if probability >= 60 and (edge is None or edge >= 2):
+    return "Great"
+  if probability >= 54 and (edge is None or edge >= 0):
+    return "Good"
+  return "Even"
+
+
+def probability_from_gap(model_gap: float | None) -> float | None:
+  if model_gap is None:
+    return None
+  return round(clamp(50 + model_gap * 4, 5, 95), 1)
+
+
+def probability_from_margin(model_margin: float | None) -> float | None:
+  if model_margin is None:
+    return None
+  return round(clamp(100 / (1 + math.exp(-model_margin / 7)), 5, 95), 1)
+
+
+def rating_for_market(bet_type: str, market: dict[str, Any], bluechip: dict[str, Any] | None, impact: dict[str, Any] | None, model_gap: float | None, market_probability: float | None) -> dict[str, Any]:
+  has_model = model_gap is not None
+  probability = probability_from_margin(model_gap) if bet_type == "moneyline" else probability_from_gap(model_gap)
+  if probability is None:
+    probability = 50.0
+  edge = None if not has_model or probability is None or market_probability is None else round(probability - market_probability * 100, 1)
+  grade = rating_grade(probability, edge, has_model)
+  reasons: list[str] = []
+  line = market.get("yes_sub_title") or market.get("title") or "This contract"
+
+  if has_model:
+    if bet_type == "moneyline":
+      reasons.append(f"Model margin gives this side an estimated {probability:.1f}% win chance.")
+    else:
+      reasons.append(f"Model gap is {model_gap:+.1f} points against this exact line.")
+  else:
+    reasons.append("No model projection is attached yet, so this is treated as even until the model feed covers it.")
+
+  if market_probability is not None and probability is not None and has_model:
+    reasons.append(f"Market odds imply about {market_probability * 100:.1f}%, versus model estimate {probability:.1f}%.")
+  elif market_probability is not None:
+    reasons.append(f"Market odds imply about {market_probability * 100:.1f}%; no model edge is counted yet.")
+
+  if bluechip and bluechip.get("model_line"):
+    reasons.append(f"Blue Chip model: {bluechip['model_line']} vs market {bluechip.get('market_line') or 'line unavailable'}.")
+
+  if impact and abs(impact.get("total_adjustment") or 0) >= 0.1:
+    reasons.append(f"Weather adjusts the total by {impact['total_adjustment']:+.1f} points.")
+
+  return {
+    "probability": probability,
+    "grade": grade,
+    "edge": edge,
+    "summary": f"{grade}: {probability:.1f}% model lean on {line}" if probability is not None and has_model else f"{grade}: model lean unavailable for {line}",
+    "reasons": reasons,
+  }
 
 
 def parse_bluechip_game(page: str, url: str) -> dict[str, Any] | None:
@@ -479,10 +560,11 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
         baseline_total = dollars_to_float(market.get("floor_strike")) if bet_type == "total" else None
         impact = weather_impact(bluechip, baseline_total)
         model_gap = contract_model_gap(bet_type, market, bluechip, impact)
+        rating = rating_for_market(bet_type, market, bluechip, impact, model_gap, cover_price)
         weather_score = impact.get("score", 0) if impact else 0
-        positive_gap = max(model_gap or 0, 0)
-        price_score = (1 - (cover_price or 0.5)) * 20 if positive_gap else 0
-        edge_score = round(positive_gap * 20 + price_score + weather_score / 10, 2)
+        positive_gap = max(model_gap or 0, 0) if bet_type != "moneyline" else 0
+        positive_edge = max(rating.get("edge") or 0, 0)
+        edge_score = 0 if rating.get("grade") == "Even" else round(positive_gap * 10 + positive_edge * 10 + weather_score / 10, 2)
 
         board.append(
           {
@@ -526,6 +608,7 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
             },
             "bluechip": bluechip,
             "weather_impact": impact,
+            "rating": rating,
             "metrics": {
               "model_market_gap": model_gap,
               "line_move": price_move,
@@ -543,7 +626,7 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
       abs(row["contract"]["price_move"] or 0),
     ),
     reverse=True,
-  ), f"Fetched {len(board)} Kalshi football spread/total contracts"
+  ), f"Fetched {len(board)} Kalshi football spread/total/moneyline contracts"
 
 
 def store_snapshots(rows: list[dict[str, Any]]) -> None:

@@ -363,6 +363,10 @@ th {
   display: grid;
 }
 
+.breakdown-item {
+  border-bottom: 1px solid #efede7;
+}
+
 .breakdown-header {
   display: grid;
   grid-template-columns: 48px minmax(170px, 1.1fr) minmax(120px, 0.7fr) minmax(210px, 1.25fr) minmax(80px, 0.5fr) minmax(120px, 0.7fr) minmax(90px, 0.55fr);
@@ -404,7 +408,6 @@ th {
   align-items: center;
   width: 100%;
   border: 0;
-  border-bottom: 1px solid #efede7;
   background: #fff;
   color: inherit;
   padding: 14px 16px;
@@ -427,7 +430,7 @@ th {
 .row-date,
 .row-market,
 .row-gap,
-.row-confidence,
+.row-rating,
 .row-odds {
   display: block;
   min-width: 0;
@@ -472,35 +475,63 @@ th {
   text-transform: uppercase;
 }
 
-.confidence {
+.rating-pill {
   display: inline-grid;
-  min-width: 74px;
-  min-height: 28px;
+  min-width: 96px;
+  min-height: 42px;
   place-items: center;
-  border-radius: 999px;
-  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 10px;
   font-size: 0.76rem;
   font-weight: 900;
+  text-align: center;
 }
 
-.confidence.strong {
+.rating-pill strong,
+.rating-pill span {
+  display: block;
+}
+
+.rating-pill.excellent {
   background: #d4f07d;
   color: #18201d;
 }
 
-.confidence.good {
+.rating-pill.great {
   background: #cfe4ff;
   color: #123861;
 }
 
-.confidence.moderate {
+.rating-pill.good {
   background: #f1e4c8;
   color: #5d4218;
 }
 
-.confidence.thin {
+.rating-pill.even {
   background: #ebe7df;
   color: #535a56;
+}
+
+.rating-explanation {
+  display: grid;
+  gap: 6px;
+  margin: 0 16px 14px 78px;
+  border-left: 4px solid #d4f07d;
+  border-radius: 6px;
+  background: #fbfaf6;
+  padding: 12px 14px;
+  color: #39403c;
+}
+
+.rating-explanation strong,
+.rating-explanation p {
+  margin: 0;
+}
+
+.rating-explanation p {
+  color: #656b68;
+  line-height: 1.35;
 }
 
 .rank {
@@ -788,7 +819,7 @@ pre {
   .row-date,
   .row-market,
   .row-gap,
-  .row-confidence,
+  .row-rating,
   .row-odds,
   .breakdown-row .line-copy {
     grid-column: 2;
@@ -797,7 +828,7 @@ pre {
   .row-date,
   .row-market,
   .row-gap,
-  .row-confidence,
+  .row-rating,
   .row-odds {
     display: grid;
     gap: 3px;
@@ -819,10 +850,14 @@ pre {
   }
 
   .row-gap,
-  .row-confidence,
+  .row-rating,
   .row-odds {
     border-top: 1px solid #efede7;
     padding-top: 10px;
+  }
+
+  .rating-explanation {
+    margin: 0 14px 14px 50px;
   }
 
   .line-chart {
