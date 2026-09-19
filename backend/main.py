@@ -162,7 +162,7 @@ def connect() -> sqlite3.Connection:
     """
     CREATE TABLE IF NOT EXISTS steering_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      game_id TEXT NOT NULL,
+      game_id TEXT NOT NULL DEFAULT '',
       holder_address TEXT NOT NULL,
       burned_tokens REAL NOT NULL,
       underdog_bias REAL NOT NULL,
@@ -174,6 +174,10 @@ def connect() -> sqlite3.Connection:
     )
     """
   )
+  try:
+    conn.execute("ALTER TABLE steering_events ADD COLUMN game_id TEXT DEFAULT ''")
+  except Exception:
+    pass
 
   conn.execute(
     """
