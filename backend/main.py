@@ -2,6 +2,7 @@ import csv
 import asyncio
 import html
 import json
+import math
 import os
 import re
 import sqlite3
@@ -23,11 +24,15 @@ KALSHI_SPREAD_SERIES = {"NFL": "KXNFLSPREAD", "NCAAF": "KXNCAAFSPREAD"}
 KALSHI_MARKET_SERIES = {
   ("NFL", "spread"): "KXNFLSPREAD",
   ("NFL", "total"): "KXNFLTOTAL",
+  ("NFL", "moneyline"): "KXNFLGAME",
   ("NCAAF", "spread"): "KXNCAAFSPREAD",
   ("NCAAF", "total"): "KXNCAAFTOTAL",
+  ("NCAAF", "moneyline"): "KXNCAAFGAME",
 }
 BLUECHIP_WEEK_URL = os.getenv("BLUECHIP_WEEK_URL", "https://bluechipanalytics.com/college-football/games/2026/week3/")
 BLUECHIP_CACHE_SECONDS = int(os.getenv("BLUECHIP_CACHE_SECONDS", "1800"))
+KALSHI_INCLUDE_UNMODELED = os.getenv("KALSHI_INCLUDE_UNMODELED", "true").lower() in {"1", "true", "yes"}
+
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("COVERAGEDESK_DB", ROOT / "data" / "coveragedesk.sqlite3"))
 PROJECTIONS_PATH = Path(os.getenv("COVERAGEDESK_PROJECTIONS", ROOT / "data" / "projections.csv"))
@@ -157,6 +162,7 @@ def connect() -> sqlite3.Connection:
     """
     CREATE TABLE IF NOT EXISTS steering_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      game_id TEXT NOT NULL,
       holder_address TEXT NOT NULL,
       burned_tokens REAL NOT NULL,
       underdog_bias REAL NOT NULL,
@@ -183,7 +189,7 @@ def connect() -> sqlite3.Connection:
     """
   )
 
-  # Seed token stats if empty
+  # Seed token stats if empty ($CVR ticker)
   cursor = conn.cursor()
   cursor.execute("SELECT COUNT(*) FROM token_stats")
   if cursor.fetchone()[0] == 0:
@@ -248,378 +254,331 @@ def extract_matchup(market: dict[str, Any]) -> tuple[str, str]:
   rules = market.get("rules_primary") or ""
   match = re.search(r"in the (.+?) vs (.+?) (?:college football|Pro Football)", rules)
   if match:
-    return match.group(1), match.group(2)
+    return match.group(1).strip(), match.group(2).strip()
   title = (market.get("title") or "").replace("?", "")
-  team = title.split(" wins", 1)[0] or market.get("yes_sub_title") or "Kalshi"
-  return team, "Market"
+  team = title.replace("Will the ", "").replace(" win", "").strip()
+  return team, "Opponent"
 
 
-def clean_text(value: str | None) -> str | None:
-  if value is None:
-    return None
-  return html.unescape(value).replace("\ufffd", "°").strip()
-
-
-def signed_line(team: str | None, spread: float | None) -> str | None:
-  if not team or spread is None:
-    return None
-  return f"{team} {spread:+.1f}".replace("+", "")
-
-
-def opponent_team(away_team: str, home_team: str, team: str | None) -> str | None:
-  if not team:
-    return None
-  key = team_key(team)
-  if key == team_key(away_team):
-    return home_team
-  if key == team_key(home_team):
-    return away_team
-  return None
-
-
-def contract_side_team(market: dict[str, Any]) -> str | None:
+def contract_side_type(market: dict[str, Any]) -> str | None:
   label = market.get("yes_sub_title") or market.get("title") or ""
-  match = re.match(r"(.+?) wins\b", label.replace("?", ""), re.I)
-  return clean_text(match.group(1)) if match else None
-
-
-def contract_model_gap(bet_type: str, market: dict[str, Any], bluechip: dict[str, Any] | None, impact: dict[str, Any] | None) -> float | None:
-  threshold = dollars_to_float(market.get("floor_strike"))
-  if threshold is None:
+  if not label:
     return None
-  if bet_type == "spread" and bluechip:
+  if "Over" in label:
+    return "over"
+  if "Under" in label:
+    return "under"
+  return "favorite"
+
+
+def contract_model_gap(
+  bet_type: str,
+  market: dict[str, Any],
+  bluechip: dict[str, Any] | None,
+  weather_impact: dict[str, Any] | None,
+) -> float | None:
+  threshold = dollars_to_float(market.get("floor_strike"))
+  if threshold is None or not bluechip:
+    return None
+
+  if bet_type == "spread":
     model_spread = bluechip.get("model_spread")
-    model_team = bluechip.get("model_team")
-    side_team = contract_side_team(market)
-    if model_spread is None or not model_team or not side_team:
-      return bluechip.get("gap")
-    model_margin = abs(float(model_spread))
-    side_margin = model_margin if team_key(side_team) == team_key(model_team) else -model_margin
-    return round(side_margin - threshold, 1)
-  if bet_type == "total" and impact and impact.get("adjusted_total") is not None:
-    adjusted_total = float(impact["adjusted_total"])
-    label = f"{market.get('yes_sub_title') or ''} {market.get('title') or ''}".lower()
-    return round(threshold - adjusted_total, 1) if "under" in label else round(adjusted_total - threshold, 1)
+    if model_spread is None:
+      return None
+    side_team = market.get("yes_sub_title") or market.get("title") or ""
+    market_team = bluechip.get("market_team") or ""
+    model_team = bluechip.get("model_team") or ""
+    is_home = team_key(side_team) == team_key(market_team) if market_team else True
+    adjusted_model = model_spread
+    if weather_impact and weather_impact.get("spread_adjustment"):
+      adjusted_model += weather_impact["spread_adjustment"]
+    gap = threshold - adjusted_model if is_home else adjusted_model - threshold
+    if model_team and market_team and team_key(model_team) != team_key(market_team):
+      gap = -gap
+    return round(gap, 1)
+
+  if bet_type == "total":
+    model_total = dollars_to_float(bluechip.get("model_spread"))
+    if model_total is None:
+      return None
+    if weather_impact and weather_impact.get("total_adjustment"):
+      model_total += weather_impact["total_adjustment"]
+    side_type = contract_side_type(market)
+    if side_type == "over":
+      return round(model_total - threshold, 1)
+    if side_type == "under":
+      return round(threshold - model_total, 1)
+
   return None
 
 
-def inferred_precipitation(condition: str | None) -> tuple[float, float]:
-  text = (condition or "").lower()
-  rain_pct = 0.0
-  snow_in = 0.0
-  if any(word in text for word in ["rain", "drizzle", "shower", "thunder"]):
-    rain_pct = 60.0 if "patchy" in text or "nearby" in text else 80.0
-  if "snow" in text or "sleet" in text or "blizzard" in text:
-    snow_in = 1.0 if "light" in text or "patchy" in text else 2.0
-  return rain_pct, snow_in
+def rating_for_market(
+  bet_type: str,
+  market: dict[str, Any],
+  bluechip: dict[str, Any] | None,
+  weather_impact: dict[str, Any] | None,
+  model_gap: float | None,
+  cover_price: float | None,
+) -> dict[str, Any]:
+  if model_gap is None or cover_price is None or cover_price <= 0:
+    return {
+      "grade": "Even",
+      "edge": 0.0,
+      "summary": "Unmodeled market",
+      "explanation": "No Blue Chip model benchmark available for this line yet.",
+      "gap_points": 0.0,
+      "price_edge_cents": 0.0,
+    }
+
+  fair_prob = clamp(0.5 + model_gap * 0.035, 0.05, 0.95)
+  market_prob = cover_price / 100.0
+  prob_edge = fair_prob - market_prob
+  price_edge_cents = round(prob_edge * 100, 1)
+
+  if model_gap >= 3.0 and prob_edge >= 0.08:
+    grade = "Strong Buy"
+    summary = f"Major model edge (+{model_gap:.1f} pts)"
+  elif model_gap >= 1.5 and prob_edge >= 0.04:
+    grade = "Buy"
+    summary = f"Solid model edge (+{model_gap:.1f} pts)"
+  elif model_gap <= -3.0 or prob_edge <= -0.08:
+    grade = "Strong Avoid"
+    summary = f"Market overpriced vs model ({model_gap:.1f} pts)"
+  elif model_gap <= -1.5 or prob_edge <= -0.04:
+    grade = "Avoid"
+    summary = f"Model discount ({model_gap:.1f} pts)"
+  else:
+    grade = "Even"
+    summary = f"Fairly priced line ({model_gap:+.1f} pts)"
+
+  side_label = market.get("yes_sub_title") or market.get("title") or "Side"
+  explanation = f"{summary}. Model projects {fair_prob * 100:.0f}% cover probability vs market price of {cover_price:.0f}¢ on {side_label}."
+  return {
+    "grade": grade,
+    "edge": round(prob_edge, 3),
+    "summary": summary,
+    "explanation": explanation,
+    "gap_points": model_gap,
+    "price_edge_cents": price_edge_cents,
+  }
 
 
-def weather_category(score: float) -> str:
-  if score < 15:
-    return "Minimal"
-  if score < 30:
-    return "Mild"
-  if score < 50:
-    return "Moderate"
-  if score < 70:
-    return "Severe"
-  return "Extreme"
+def gap_confidence(gap: float | None) -> float:
+  if gap is None:
+    return 0.55
+  return round(clamp(0.55 + abs(gap) * 0.05, 0.55, 0.95), 2)
 
 
-def weather_impact(bluechip: dict[str, Any] | None, baseline_total: float | None) -> dict[str, Any] | None:
+async def fetch_bluechip_analytics() -> dict[str, Any]:
+  now = time.time()
+  if BLUECHIP_CACHE["expires_at"] > now and BLUECHIP_CACHE["games"]:
+    return BLUECHIP_CACHE["games"]
+
+  headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  }
+
+  async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
+    resp = await client.get(BLUECHIP_WEEK_URL)
+    resp.raise_for_status()
+    page = resp.text
+
+  card_matches = re.findall(
+    r'<div class="matchup-header text-center">.*?<a href="([^"]+)".*?class="matchup-link">([^<]+)</a>.*?<div class="team text-end">.*?<div class="team-name">([^<]+)</div>.*?<div class="team-name">([^<]+)</div>',
+    page,
+    flags=re.S,
+  )
+
+  games: dict[str, Any] = {}
+  for rel_url, title, away, home in card_matches:
+    full_url = rel_url if rel_url.startswith("http") else f"https://bluechipanalytics.com{rel_url}"
+    key = matchup_key(away, home)
+    games[key] = {
+      "url": full_url,
+      "title": html.unescape(title.strip()),
+      "away_team": html.unescape(away.strip()),
+      "home_team": html.unescape(home.strip()),
+      "source": "Blue Chip Analytics",
+      "updated_at": now_iso(),
+    }
+
+  row_matches = re.findall(
+    r'<tr>\s*<td><a href="([^"]+)">([^<]+)</a></td>\s*<td>([^<]*)</td>\s*<td>([^<]*)</td>\s*<td>([^<]*)</td>\s*<td>([^<]*)</td>\s*<td>([^<]*)</td>',
+    page,
+    flags=re.S,
+  )
+
+  for rel_url, matchup, m_line, m_team, md_line, md_team, gap in row_matches:
+    teams = matchup.split(" vs ")
+    if len(teams) != 2:
+      continue
+    key = matchup_key(teams[0], teams[1])
+    game = games.setdefault(
+      key,
+      {
+        "url": rel_url if rel_url.startswith("http") else f"https://bluechipanalytics.com{rel_url}",
+        "title": matchup.strip(),
+        "away_team": teams[0].strip(),
+        "home_team": teams[1].strip(),
+        "source": "Blue Chip Analytics",
+        "updated_at": now_iso(),
+      },
+    )
+    game["market_line"] = m_line.strip() or None
+    game["market_team"] = m_team.strip() or None
+    game["model_line"] = md_line.strip() or None
+    game["model_team"] = md_team.strip() or None
+    game["market_spread"] = dollars_to_float(m_line)
+    game["model_spread"] = dollars_to_float(md_line)
+    game["gap"] = dollars_to_float(gap)
+
+  BLUECHIP_CACHE["expires_at"] = now + BLUECHIP_CACHE_SECONDS
+  BLUECHIP_CACHE["games"] = games
+  return games
+
+
+def weather_impact(bluechip: dict[str, Any] | None, baseline_total: float | None = None) -> dict[str, Any] | None:
   if not bluechip:
     return None
   weather = bluechip.get("weather") or {}
-  condition = weather.get("condition")
-  temp = dollars_to_float(weather.get("temperature_f"))
-  wind = dollars_to_float(weather.get("wind_mph"))
-  if temp is None and wind is None and not condition:
+  wind = weather.get("wind_mph")
+  temp = weather.get("temperature_f")
+  condition = (weather.get("condition") or "").lower()
+
+  if wind is None and temp is None and not condition:
     return None
 
-  temp_f = temp if temp is not None else 65.0
-  wind_mph = max(wind if wind is not None else 0.0, 0.0)
-  gust_mph = wind_mph
-  rain_pct, snow_in = inferred_precipitation(condition)
+  wind_imp = 0.0
+  if wind is not None:
+    if wind >= 20:
+      wind_imp = round((wind - 15) * 0.35, 1)
+    elif wind >= 12:
+      wind_imp = round((wind - 10) * 0.2, 1)
 
-  wind_component = clamp((wind_mph - 5) / 20, 0, 1) * 35
-  gust_component = clamp((gust_mph - 10) / 30, 0, 1) * 15
-  rain_component = clamp(rain_pct / 100, 0, 1) * 15
-  snow_component = clamp(snow_in / 4, 0, 1) * 20
-  cold_component = clamp((40 - temp_f) / 35, 0, 1) * 10
-  score = round(clamp(wind_component + gust_component + rain_component + snow_component + cold_component, 0, 100), 1)
+  precip_imp = 0.0
+  if "rain" in condition or "shower" in condition:
+    precip_imp = 1.5
+  elif "snow" in condition:
+    precip_imp = 2.5
 
-  total_adjustment = -(score / 100) * 8.0
-  total_adjustment -= max(0, wind_mph - 12) * 0.10
-  total_adjustment -= max(0, gust_mph - 25) * 0.04
-  total_adjustment -= (rain_pct / 100) * 0.8
-  total_adjustment -= min(snow_in, 4) * 0.35
-  if temp_f < 25:
-    total_adjustment -= 0.5
+  temp_imp = 0.0
+  if temp is not None and temp <= 32:
+    temp_imp = round((35 - temp) * 0.05, 1)
 
-  adjusted_total = None if baseline_total is None else round(baseline_total + total_adjustment, 2)
-  model_spread = bluechip.get("model_spread")
-  adjusted_spread = None if model_spread is None else round(float(model_spread), 2)
-  projected = None
-  if adjusted_total is not None and adjusted_spread is not None:
-    projected = {
-      "team_a_points": round((adjusted_total + adjusted_spread) / 2, 2),
-      "team_b_points": round((adjusted_total - adjusted_spread) / 2, 2),
-    }
+  total_adj = round(-(wind_imp + precip_imp + temp_imp), 1)
+  spread_adj = round(wind_imp * 0.15 + precip_imp * 0.2, 1)
+
+  score = int(clamp((wind_imp * 12 + precip_imp * 20 + temp_imp * 10), 0, 100))
+  category = "Extreme" if score >= 65 else "Moderate" if score >= 35 else "Minor" if score >= 15 else "Negligible"
+
+  adj_total = round(baseline_total + total_adj, 1) if baseline_total is not None else None
 
   return {
     "score": score,
-    "category": weather_category(score),
-    "wind_impact": round(wind_component + gust_component, 1),
-    "precipitation_impact": round(rain_component + snow_component, 1),
-    "temperature_impact": round(cold_component, 1),
-    "spread_adjustment": 0.0,
-    "total_adjustment": round(total_adjustment, 2),
-    "adjusted_total": adjusted_total,
-    "adjusted_spread": adjusted_spread,
-    "projected_score": projected,
-    "confidence": round(clamp(50 + score * 0.45, 50, 95), 1),
+    "category": category,
+    "wind_impact": wind_imp,
+    "precipitation_impact": precip_imp,
+    "temperature_impact": temp_imp,
+    "spread_adjustment": spread_adj,
+    "total_adjustment": total_adj,
+    "adjusted_total": adj_total,
+    "adjusted_spread": spread_adj,
+    "confidence": round(clamp(0.6 + score / 200.0, 0.6, 0.92), 2),
     "assumptions": {
-      "rain_pct": rain_pct,
-      "snow_in": snow_in,
-      "gust_mph": gust_mph,
+      "rain_pct": 70 if "rain" in condition else 0,
+      "snow_in": 2.0 if "snow" in condition else 0.0,
+      "gust_mph": round((wind or 0) * 1.35, 1),
     },
   }
 
 
-def gap_confidence(model_gap: float | None) -> int:
-  if model_gap is None:
-    return 46
-  if model_gap >= 4:
-    return 88
-  if model_gap >= 2.5:
-    return 76
-  if model_gap >= 1:
-    return 64
-  return 52
+def collapse_board_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+  groups: dict[str, list[dict[str, Any]]] = {}
+  for row in rows:
+    key = matchup_key(row["away_team"], row["home_team"])
+    groups.setdefault(key, []).append(row)
 
+  collapsed: list[dict[str, Any]] = []
+  for key, items in groups.items():
+    primary = max(items, key=lambda item: (item.get("edge_score") or 0, item.get("contract", {}).get("volume_24h") or 0))
+    alternate_markets = []
+    for item in items:
+      if item["game_id"] == primary["game_id"]:
+        continue
+      contract = item.get("contract") or {}
+      rating = item.get("rating") or {}
+      alternate_markets.append({
+        "ticker": contract.get("ticker") or item["game_id"],
+        "title": contract.get("title") or item.get("matchup"),
+        "side_label": contract.get("side_label") or item.get("bet_side"),
+        "bet_type": item.get("bet_type", "spread"),
+        "line": item.get("market", {}).get("consensus_spread"),
+        "yes_bid": contract.get("yes_bid"),
+        "yes_ask": contract.get("yes_ask"),
+        "last_price": contract.get("last_price"),
+        "volume_24h": contract.get("volume_24h"),
+        "model_gap": item.get("metrics", {}).get("model_market_gap"),
+        "rating": rating.get("grade", "Even"),
+        "summary": rating.get("summary", ""),
+      })
+    cloned = dict(primary)
+    cloned["alternate_markets"] = alternate_markets
+    collapsed.append(cloned)
 
-def parse_bluechip_game(page: str, url: str) -> dict[str, Any] | None:
-  title_match = re.search(r"<title>(.*?)\s+Prediction,", page, re.I | re.S)
-  if not title_match:
-    return None
-  teams = clean_text(re.sub(r"\s+", " ", title_match.group(1))).split(" vs ")
-  if len(teams) != 2:
-    return None
-  away_team, home_team = teams
-
-  line_match = re.search(
-    r"The market has (?P<market_team>.+?) (?P<market_spread>[+-]?\d+(?:\.\d+)?) and the Blue Chip model makes it (?P<model_team>.+?) (?P<model_spread>[+-]?\d+(?:\.\d+)?) - a gap of (?P<gap>\d+(?:\.\d+)?) points toward (?P<edge_team>.+?)(?:,|\.)",
-    page,
-    re.I | re.S,
-  )
-  weather_match = re.search(
-    r"The forecast for (?P<venue>.+?) shows (?P<condition>.+?), (?P<temp>\d+(?:\.\d+)?)\s*[°\ufffd]F with winds of (?P<wind>\d+(?:\.\d+)?) mph",
-    page,
-    re.I | re.S,
-  )
-  desc_match = re.search(r'<meta name="description" content="([^"]+)"', page, re.I)
-  image_match = re.search(r'<meta property="og:image"\s+content="([^"]+)"', page, re.I)
-  modified_match = re.search(r'"dateModified":\s*"([^"]+)"', page, re.I)
-
-  market_team = clean_text(line_match.group("market_team")) if line_match else None
-  model_team = clean_text(line_match.group("model_team")) if line_match else None
-  market_spread = float(line_match.group("market_spread")) if line_match else None
-  model_spread = float(line_match.group("model_spread")) if line_match else None
-  desc_text = clean_text(desc_match.group(1)) if desc_match else None
-
-  if desc_text and (market_spread is None or model_spread is None):
-    fallback = re.search(
-      r"line (?P<market_team>.+?) (?P<market_spread>[+-]?\d+(?:\.\d+)?)\.\s+Power ratings favor (?P<model_team>.+?) by (?P<model_margin>\d+(?:\.\d+)?)",
-      desc_text,
-      re.I,
-    )
-    if fallback:
-      market_team = clean_text(fallback.group("market_team"))
-      market_spread = float(fallback.group("market_spread"))
-      model_team = clean_text(fallback.group("model_team"))
-      model_margin = float(fallback.group("model_margin"))
-      market_opponent = opponent_team(away_team, home_team, market_team)
-      model_spread = -model_margin if model_team == market_team else model_margin
-      if market_spread and market_team and market_opponent and market_spread > 0:
-        market_team = market_opponent
-        market_spread = -market_spread
-
-  gap = float(line_match.group("gap")) if line_match else None
-  if gap is None and market_spread is not None and model_spread is not None:
-    gap = round(abs(model_spread - market_spread), 1)
-
-  return {
-    "away_team": away_team,
-    "home_team": home_team,
-    "market_line": signed_line(market_team, market_spread),
-    "model_line": signed_line(model_team, model_spread),
-    "market_team": market_team,
-    "model_team": model_team,
-    "market_spread": market_spread,
-    "model_spread": model_spread,
-    "gap": gap,
-    "edge_team": clean_text(line_match.group("edge_team")) if line_match else None,
-    "summary": desc_text,
-    "weather": {
-      "venue": clean_text(weather_match.group("venue")) if weather_match else None,
-      "condition": clean_text(weather_match.group("condition")) if weather_match else None,
-      "temperature_f": float(weather_match.group("temp")) if weather_match else None,
-      "wind_mph": float(weather_match.group("wind")) if weather_match else None,
-      "source": "WeatherAPI.com",
-      "map_url": clean_text(image_match.group(1)) if image_match else None,
-    },
-    "source": "Blue Chip Analytics",
-    "url": url,
-    "updated_at": clean_text(modified_match.group(1)) if modified_match else None,
-  }
-
-
-async def fetch_bluechip_games() -> dict[str, dict[str, Any]]:
-  if not BLUECHIP_WEEK_URL:
-    return {}
-  now = time.time()
-  if BLUECHIP_CACHE["expires_at"] > now:
-    return BLUECHIP_CACHE["games"]
-
-  async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
-    response = await client.get(BLUECHIP_WEEK_URL)
-    response.raise_for_status()
-    week_page = response.text
-    urls = sorted(
-      {
-        url if url.startswith("http") else f"https://bluechipanalytics.com{url}"
-        for url in re.findall(r'https://bluechipanalytics\.com/college-football/games/2026/week\d+/2026-[^"]+?/|href="(/college-football/games/2026/week\d+/2026-[^"]+?/)"', week_page)
-        for url in ((url,) if isinstance(url, str) else url)
-        if url
-      }
-    )
-    if not urls:
-      urls = sorted(set(re.findall(r"https://bluechipanalytics\.com/college-football/games/2026/week\d+/2026-[^\" ]+?/", week_page)))
-
-    semaphore = asyncio.Semaphore(8)
-
-    async def fetch_one(url: str) -> dict[str, Any] | None:
-      async with semaphore:
-        try:
-          game_response = await client.get(url)
-          game_response.raise_for_status()
-          return parse_bluechip_game(game_response.text, url)
-        except Exception:
-          return None
-
-    games = [game for game in await asyncio.gather(*(fetch_one(url) for url in urls)) if game]
-    keyed = {matchup_key(game["away_team"], game["home_team"]): game for game in games}
-    BLUECHIP_CACHE.update({"expires_at": now + BLUECHIP_CACHE_SECONDS, "games": keyed})
-    return keyed
-
-
-def load_projections() -> dict[str, dict[str, Any]]:
-  if not PROJECTIONS_PATH.exists():
-    return {}
-  with PROJECTIONS_PATH.open(newline="", encoding="utf-8") as f:
-    rows = csv.DictReader(f)
-    return {
-      row["game_id"]: {
-        "fair_spread": float(row["fair_spread"]),
-        "source": row.get("source") or "csv_projection",
-        "updated_at": row.get("updated_at") or None,
-      }
-      for row in rows
-      if row.get("game_id") and row.get("fair_spread")
-    }
-
-
-async def fetch_odds() -> tuple[list[dict[str, Any]], str]:
-  api_key = os.getenv("ODDS_API_KEY")
-  if not api_key:
-    return [], "ODDS_API_KEY is not set on the backend"
-
-  rows: list[dict[str, Any]] = []
-  captured_at = now_iso()
-  async with httpx.AsyncClient(timeout=25) as client:
-    for sport_name, sport_key in SPORTS.items():
-      response = await client.get(
-        API_URL.format(sport=sport_key),
-        params={
-          "apiKey": api_key,
-          "regions": os.getenv("ODDS_REGION", "us"),
-          "markets": "spreads",
-          "oddsFormat": "american",
-        },
-      )
-      response.raise_for_status()
-      for event in response.json():
-        game_id = canonical_id(sport_name, event["commence_time"], event["away_team"], event["home_team"])
-        for book in event.get("bookmakers", []):
-          spread_market = next((market for market in book.get("markets", []) if market.get("key") == "spreads"), None)
-          if not spread_market:
-            continue
-          for outcome in spread_market.get("outcomes", []):
-            rows.append(
-              {
-                "game_id": game_id,
-                "provider_event_id": event["id"],
-                "sport": sport_name,
-                "commence_time": event["commence_time"],
-                "home_team": event["home_team"],
-                "away_team": event["away_team"],
-                "book": book["title"],
-                "market": "spreads",
-                "side": outcome["name"],
-                "line": outcome.get("point"),
-                "price": outcome.get("price"),
-                "captured_at": captured_at,
-              }
-            )
-  return rows, f"Fetched {len(rows)} sportsbook lines"
+  return sorted(collapsed, key=lambda row: row.get("edge_score") or 0, reverse=True)
 
 
 async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
-  limit = int(os.getenv("KALSHI_MARKET_LIMIT", "1000"))
-  max_pages = int(os.getenv("KALSHI_MAX_PAGES", "10"))
-  captured_at = now_iso()
+  bluechip_games = await fetch_bluechip_analytics()
+  raw_count = 0
   board: list[dict[str, Any]] = []
-  bluechip_games = await fetch_bluechip_games()
-  async with httpx.AsyncClient(timeout=25) as client:
-    for (sport_name, bet_type), series_ticker in KALSHI_MARKET_SERIES.items():
-      markets: list[dict[str, Any]] = []
-      cursor = ""
-      for _ in range(max_pages):
-        params = {"series_ticker": series_ticker, "status": "open", "limit": limit}
-        if cursor:
-          params["cursor"] = cursor
-        response = await client.get(f"{KALSHI_API_URL}/markets", params=params)
-        response.raise_for_status()
-        payload = response.json()
-        markets.extend(payload.get("markets", []))
-        cursor = payload.get("cursor") or ""
-        if not cursor:
-          break
+  captured_at = now_iso()
+
+  async with httpx.AsyncClient(timeout=15.0) as client:
+    for (sport_name, bet_type), series in KALSHI_MARKET_SERIES.items():
+      url = f"{KALSHI_API_URL}/markets"
+      params = {"series_ticker": series, "limit": 100, "status": "open"}
+      resp = await client.get(url, params=params)
+      if resp.status_code != 200:
+        continue
+
+      markets = resp.json().get("markets", [])
+      raw_count += len(markets)
 
       for market in markets:
+        ticker = market.get("ticker", "")
+        yes_bid = fp_to_float(market.get("yes_bid_fp"))
+        yes_ask = fp_to_float(market.get("yes_ask_fp"))
+        no_bid = fp_to_float(market.get("no_bid_fp"))
+        no_ask = fp_to_float(market.get("no_ask_fp"))
+        last_price = fp_to_float(market.get("last_price_fp"))
+        previous_price = fp_to_float(market.get("previous_price_fp"))
+
         away_team, home_team = extract_matchup(market)
-        bluechip = bluechip_games.get(matchup_key(away_team, home_team)) if sport_name == "NCAAF" else None
-        yes_bid = dollars_to_float(market.get("yes_bid_dollars"))
-        yes_ask = dollars_to_float(market.get("yes_ask_dollars"))
-        no_bid = dollars_to_float(market.get("no_bid_dollars"))
-        no_ask = dollars_to_float(market.get("no_ask_dollars"))
-        last_price = dollars_to_float(market.get("last_price_dollars"))
-        previous_price = dollars_to_float(market.get("previous_price_dollars"))
+        b_key = matchup_key(away_team, home_team)
+        bluechip = bluechip_games.get(b_key)
+
+        if not bluechip and not KALSHI_INCLUDE_UNMODELED:
+          continue
+
         price_move = None
         if last_price is not None and previous_price is not None and previous_price > 0:
           price_move = round((last_price - previous_price) * 100, 1)
+
         cover_price = yes_bid if yes_bid is not None else last_price
         baseline_total = dollars_to_float(market.get("floor_strike")) if bet_type == "total" else None
         impact = weather_impact(bluechip, baseline_total)
         model_gap = contract_model_gap(bet_type, market, bluechip, impact)
+        rating = rating_for_market(bet_type, market, bluechip, impact, model_gap, cover_price)
         weather_score = impact.get("score", 0) if impact else 0
-        positive_gap = max(model_gap or 0, 0)
-        price_score = (1 - (cover_price or 0.5)) * 20 if positive_gap else 0
-        edge_score = round(positive_gap * 20 + price_score + weather_score / 10, 2)
+        positive_gap = max(model_gap or 0, 0) if bet_type != "moneyline" else 0
+        positive_edge = max(rating.get("edge") or 0, 0)
+        edge_score = 0 if rating.get("grade") == "Even" else round(positive_gap * 10 + positive_edge * 10 + weather_score / 10, 2)
 
         board.append(
           {
-            "game_id": market["ticker"],
+            "game_id": ticker,
             "data_source": "kalshi",
             "sport": sport_name,
             "bet_type": bet_type,
@@ -637,7 +596,7 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
               "latest_timestamp": market.get("updated_time") or captured_at,
             },
             "contract": {
-              "ticker": market["ticker"],
+              "ticker": ticker,
               "title": (market.get("title") or "").replace("?", ""),
               "side_label": market.get("yes_sub_title") or market.get("title"),
               "yes_bid": yes_bid,
@@ -659,6 +618,7 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
             },
             "bluechip": bluechip,
             "weather_impact": impact,
+            "rating": rating,
             "metrics": {
               "model_market_gap": model_gap,
               "line_move": price_move,
@@ -668,135 +628,8 @@ async def fetch_kalshi_board() -> tuple[list[dict[str, Any]], str]:
           }
         )
 
-  return sorted(
-    board,
-    key=lambda row: (
-      row["edge_score"],
-      row["metrics"]["model_market_gap"] or 0,
-      abs(row["contract"]["price_move"] or 0),
-    ),
-    reverse=True,
-  ), f"Fetched {len(board)} Kalshi football spread/total contracts"
-
-
-def store_snapshots(rows: list[dict[str, Any]]) -> None:
-  if not rows:
-    return
-  with connect() as conn:
-    conn.executemany(
-      """
-      INSERT INTO odds_snapshots (
-        game_id, provider_event_id, sport, commence_time, home_team, away_team,
-        book, market, side, line, price, captured_at
-      ) VALUES (
-        :game_id, :provider_event_id, :sport, :commence_time, :home_team, :away_team,
-        :book, :market, :side, :line, :price, :captured_at
-      )
-      """,
-      rows,
-    )
-    conn.commit()
-
-
-def current_snapshots() -> list[sqlite3.Row]:
-  with connect() as conn:
-    return conn.execute(
-      """
-      SELECT o.*
-      FROM odds_snapshots o
-      JOIN (
-        SELECT game_id, book, side, MAX(captured_at) AS captured_at
-        FROM odds_snapshots
-        GROUP BY game_id, book, side
-      ) latest
-      ON o.game_id = latest.game_id
-        AND o.book = latest.book
-        AND o.side = latest.side
-        AND o.captured_at = latest.captured_at
-      ORDER BY o.commence_time
-      """
-    ).fetchall()
-
-
-def opening_spread(conn: sqlite3.Connection, game_id: str, home_team: str) -> float | None:
-  row = conn.execute(
-    """
-    SELECT line FROM odds_snapshots
-    WHERE game_id = ? AND side = ?
-    ORDER BY captured_at ASC, id ASC
-    LIMIT 1
-    """,
-    (game_id, home_team),
-  ).fetchone()
-  return None if row is None else row["line"]
-
-
-def build_board() -> list[dict[str, Any]]:
-  projections = load_projections()
-  snapshots = current_snapshots()
-  grouped: dict[str, list[sqlite3.Row]] = {}
-  for row in snapshots:
-    grouped.setdefault(row["game_id"], []).append(row)
-
-  board: list[dict[str, Any]] = []
-  with connect() as conn:
-    for game_id, rows in grouped.items():
-      sample = rows[0]
-      home_team = sample["home_team"]
-      away_team = sample["away_team"]
-      home_rows = [row for row in rows if row["side"] == home_team and row["line"] is not None]
-      away_rows = [row for row in rows if row["side"] == away_team and row["line"] is not None]
-      if not home_rows:
-        continue
-
-      consensus = statistics.median([row["line"] for row in home_rows])
-      opener = opening_spread(conn, game_id, home_team)
-      line_move = None if opener is None else consensus - opener
-      latest = max(rows, key=lambda row: row["captured_at"])
-      projection = projections.get(game_id, {})
-      fair_spread = projection.get("fair_spread")
-      gap = None if fair_spread is None else fair_spread - consensus
-      home_favorite = consensus <= 0
-      favorite_pool = home_rows if home_favorite else away_rows
-      underdog_pool = away_rows if home_favorite else home_rows
-      confidence = min(96, 54 + len({row["book"] for row in rows}) * 5 + (12 if fair_spread is not None else 0))
-
-      board.append(
-        {
-          "game_id": game_id,
-          "data_source": "sportsbook",
-          "sport": sample["sport"],
-          "commence_time": sample["commence_time"],
-          "away_team": away_team,
-          "home_team": home_team,
-          "market": {
-            "consensus_spread": consensus,
-            "best_favorite_line": max([row["line"] for row in favorite_pool], default=None),
-            "best_underdog_line": max([row["line"] for row in underdog_pool], default=None),
-            "opening_spread": opener,
-            "book_count": len({row["book"] for row in rows}),
-            "latest_book": latest["book"],
-            "latest_timestamp": latest["captured_at"],
-          },
-          "model": {
-            "fair_spread": fair_spread,
-            "source": projection.get("source"),
-            "updated_at": projection.get("updated_at"),
-          },
-          "metrics": {
-            "model_market_gap": gap,
-            "line_move": line_move,
-            "confidence_score": confidence,
-          },
-          "updated_at": latest["captured_at"],
-        }
-      )
-
-  return sorted(
-    board,
-    key=lambda row: abs(row["metrics"]["model_market_gap"] or row["metrics"]["line_move"] or 0),
-    reverse=True,
-  )
+  ranked_rows = collapse_board_rows(board)
+  return ranked_rows, f"Fetched {raw_count} Kalshi contracts; using {len(bluechip_games)} Blue Chip NCAAF games and showing {len(ranked_rows)} ranked lines"
 
 
 @app.get("/api/health")
@@ -812,21 +645,28 @@ def health() -> dict[str, Any]:
 @app.get("/api/board")
 async def board() -> dict[str, Any]:
   status = "Using stored snapshots"
-  try:
-    rows, status = await fetch_odds()
-    store_snapshots(rows)
-  except Exception as exc:
-    status = f"Odds refresh failed; using stored snapshots: {exc}"
 
-  rows = build_board()
-  source = "sportsbook"
-  if not rows:
-    try:
-      rows, status = await fetch_kalshi_board()
-      source = "kalshi"
-    except Exception as exc:
-      status = f"Kalshi refresh failed and no sportsbook snapshots are stored: {exc}"
-      source = "live"
+  try:
+    rows, status = await fetch_kalshi_board()
+    source = "kalshi"
+  except Exception as exc:
+    status = f"Kalshi refresh failed: {exc}"
+    source = "live"
+    rows = []
+
+  # Attach per-game steering weights and thoughts to each board row
+  conn = connect()
+  cursor = conn.cursor()
+
+  for row in rows:
+    game_id = row.get("game_id")
+    cursor.execute("SELECT holder_address, burned_tokens, underdog_bias, ncaaf_weight, nfl_weight, min_edge_threshold, custom_directive, created_at FROM steering_events WHERE game_id = ? ORDER BY id DESC LIMIT 1", (game_id,))
+    steer = cursor.fetchone()
+    row["steering"] = dict(steer) if steer else None
+
+    cursor.execute("SELECT id, thought, confidence, edge, bet_placed, created_at FROM agent_thoughts WHERE game_id = ? ORDER BY id DESC LIMIT 3", (game_id,))
+    thoughts = [dict(r) for r in cursor.fetchall()]
+    row["agent_thoughts"] = thoughts
 
   return {
     "generated_at": now_iso(),
@@ -837,13 +677,19 @@ async def board() -> dict[str, Any]:
 
 
 @app.get("/api/agent/thoughts")
-def get_agent_thoughts(limit: int = 50) -> dict[str, Any]:
+def get_agent_thoughts(game_id: str | None = None, limit: int = 50) -> dict[str, Any]:
   conn = connect()
   cursor = conn.cursor()
-  cursor.execute(
-    "SELECT id, game_id, matchup, thought, confidence, edge, bet_placed, steering_influences, created_at FROM agent_thoughts ORDER BY id DESC LIMIT ?",
-    (limit,),
-  )
+  if game_id:
+    cursor.execute(
+      "SELECT id, game_id, matchup, thought, confidence, edge, bet_placed, steering_influences, created_at FROM agent_thoughts WHERE game_id = ? ORDER BY id DESC LIMIT ?",
+      (game_id, limit),
+    )
+  else:
+    cursor.execute(
+      "SELECT id, game_id, matchup, thought, confidence, edge, bet_placed, steering_influences, created_at FROM agent_thoughts ORDER BY id DESC LIMIT ?",
+      (limit,),
+    )
   thoughts = [dict(row) for row in cursor.fetchall()]
   return {"thoughts": thoughts, "count": len(thoughts)}
 
@@ -882,27 +728,9 @@ def get_holders() -> dict[str, Any]:
   return {"holders": holders}
 
 
-@app.get("/api/agent/steering-status")
-def get_steering_status() -> dict[str, Any]:
-  conn = connect()
-  cursor = conn.cursor()
-  cursor.execute("SELECT holder_address, burned_tokens, underdog_bias, ncaaf_weight, nfl_weight, min_edge_threshold, custom_directive, created_at FROM steering_events ORDER BY id DESC LIMIT 1")
-  latest = cursor.fetchone()
-  if latest:
-    return dict(latest)
-  return {
-    "underdog_bias": 1.0,
-    "ncaaf_weight": 1.0,
-    "nfl_weight": 1.0,
-    "min_edge_threshold": 1.5,
-    "custom_directive": "Default CoverageDesk Strategy (Consensus Gap > 1.5 pts)",
-    "created_at": now_iso(),
-    "burned_tokens": 0.0,
-  }
-
-
-@app.post("/api/agent/steer")
-def submit_steering(payload: dict[str, Any]) -> dict[str, Any]:
+@app.post("/api/agent/steer-game")
+def submit_game_steering(payload: dict[str, Any]) -> dict[str, Any]:
+  game_id = payload.get("game_id", "").strip()
   holder_address = payload.get("holder_address", "").strip()
   burned_tokens = float(payload.get("burned_tokens", 0.0))
   underdog_bias = float(payload.get("underdog_bias", 1.0))
@@ -911,55 +739,50 @@ def submit_steering(payload: dict[str, Any]) -> dict[str, Any]:
   min_edge_threshold = float(payload.get("min_edge_threshold", 1.5))
   custom_directive = payload.get("custom_directive", "").strip()
 
-  if not holder_address:
-    raise HTTPException(status_code=400, detail="holder_address is required")
+  if not game_id or not holder_address:
+    raise HTTPException(status_code=400, detail="game_id and holder_address are required")
+
+  if burned_tokens < 10000:
+    raise HTTPException(status_code=400, detail="Minimum steering burn is 10,000 $CVR")
 
   conn = connect()
   cursor = conn.cursor()
   cursor.execute("SELECT percentage, balance FROM holder_ledger WHERE address = ?", (holder_address,))
   holder = cursor.fetchone()
 
-  # Check if holder holds >= 0.5% (5,000,000 $COVERAGE) or mock verification
   percentage = holder["percentage"] if holder else 0.50
   if percentage < 0.50:
-    raise HTTPException(status_code=403, detail="Steering requires holding >= 0.5% of total supply (5,000,000 $COVERAGE)")
+    raise HTTPException(status_code=403, detail="Line steering requires holding ≥ 0.5% of total supply (5,000,000 $CVR)")
 
   conn.execute(
     """
-    INSERT INTO steering_events (holder_address, burned_tokens, underdog_bias, ncaaf_weight, nfl_weight, min_edge_threshold, custom_directive, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO steering_events (game_id, holder_address, burned_tokens, underdog_bias, ncaaf_weight, nfl_weight, min_edge_threshold, custom_directive, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
-    (holder_address, burned_tokens, underdog_bias, ncaaf_weight, nfl_weight, min_edge_threshold, custom_directive, now_iso())
+    (game_id, holder_address, burned_tokens, underdog_bias, ncaaf_weight, nfl_weight, min_edge_threshold, custom_directive, now_iso())
   )
 
   # Update total burned in token stats
   conn.execute("UPDATE token_stats SET total_burned = total_burned + ?, updated_at = ? WHERE id = 1", (burned_tokens, now_iso()))
   conn.commit()
 
-  return {"ok": True, "message": "Steering weights updated and tokens burned", "burned_tokens": burned_tokens}
+  return {"ok": True, "message": f"Successfully burned {burned_tokens:,.0f} $CVR to steer line {game_id}!", "burned_tokens": burned_tokens}
 
 
 @app.post("/api/agent/tick")
 async def agent_tick() -> dict[str, Any]:
-  """
-  Trigger agent cycle:
-  1. Reads active board lines.
-  2. Reads active holder steering weights.
-  3. Evaluates matchups, generates thoughts, places automated bets.
-  4. Settles completed bets:
-     - 50% net win profit -> Buy back and burn $COVERAGE.
-     - 50% net win profit -> Distribute dividends to >1% holders.
-  """
   board_data = await board()
   rows = board_data.get("rows", [])
-  steering = get_steering_status()
 
   conn = connect()
   cursor = conn.cursor()
   new_thoughts = []
   new_bets = []
 
-  for row in rows[:5]:  # Process top candidates
+  for row in rows[:8]:
+    steering = row.get("steering") or {
+      "underdog_bias": 1.0, "ncaaf_weight": 1.0, "nfl_weight": 1.0, "min_edge_threshold": 1.5, "custom_directive": ""
+    }
     thought, bet = agent_engine.generate_thought_and_bet(row, steering)
     conn.execute(
       """
@@ -998,12 +821,10 @@ async def agent_tick() -> dict[str, Any]:
       total_burned_delta += settled["buyback_burned"]
       total_distributed_delta += settled["dividend_distributed"]
 
-      # Record burn history event
       conn.execute(
         "INSERT INTO burn_and_payout_history (bet_id, event_type, amount, recipients_count, tx_hash, timestamp) VALUES (?, 'BUYBACK_BURN', ?, 1, ?, ?)",
         (settled["id"], settled["buyback_burned"], f"0xburn_{settled['id']}", now_iso())
       )
-      # Record dividend payout history event
       cursor.execute("SELECT COUNT(*) FROM holder_ledger WHERE is_dividend_eligible = 1")
       eligible_count = cursor.fetchone()[0]
       conn.execute(
@@ -1011,7 +832,6 @@ async def agent_tick() -> dict[str, Any]:
         (settled["id"], settled["dividend_distributed"], eligible_count, f"0xpayout_{settled['id']}", now_iso())
       )
 
-  # Update token stats
   conn.execute(
     """
     UPDATE token_stats
@@ -1033,4 +853,3 @@ async def agent_tick() -> dict[str, Any]:
     "buyback_burned_tokens": total_burned_delta,
     "distributed_dividend_tokens": total_distributed_delta,
   }
-

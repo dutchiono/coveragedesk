@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-TOTAL_SUPPLY = 1_000_000_000.0  # 1 Billion $COVERAGE
+TOTAL_SUPPLY = 1_000_000_000.0  # 1 Billion $CVR
 
 
 def now_iso() -> str:
@@ -64,7 +64,7 @@ def generate_thought_and_bet(board_row: dict[str, Any], steering_weights: dict[s
         side_label = f"{away_team} {consensus_spread}"
         stake = round(random.uniform(500, 2500), 2)
         thought_parts.append(
-            f"DECISION: QUALIFIED BET FOUND. Confidence score {confidence*100:.1f}%. Placing automated bet on {side_label} for {stake:,.0f} $COVERAGE bankroll stake."
+            f"DECISION: QUALIFIED BET FOUND. Confidence score {confidence*100:.1f}%. Placing automated bet on {side_label} for {stake:,.0f} $CVR bankroll stake."
         )
         bet_obj = {
             "id": f"bet_{uuid.uuid4().hex[:10]}",
